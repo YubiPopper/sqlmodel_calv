@@ -3,6 +3,7 @@ import { Layers, Database, Box, Settings } from 'lucide-react';
 import { useModelStore } from '../../../store/useModelStore';
 import { SearchBox } from './SearchBox';
 import { ModelTree } from './ModelTree';
+import { ProjectTree } from './ProjectTree';
 import { QuickActions } from './QuickActions';
 import { ConceptualSettingsDialog } from '../../ui/ConceptualSettingsDialog';
 import { Tooltip } from '../../shared/Tooltip';
@@ -163,6 +164,9 @@ export const LeftSidebar: React.FC = () => {
         )}
 
       </div>
+
+      {/* Project / Data Model hierarchy */}
+      <ProjectTree />
 
       {/* Search */}
       <SearchBox 

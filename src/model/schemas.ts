@@ -142,3 +142,29 @@ export const LayoutSchema = z.object({
   viewport: ViewportSchema,
 });
 export type LayoutData = z.infer<typeof LayoutSchema>;
+
+// Stored snapshot for a single data model inside a project.
+export interface DataModelSnapshot {
+  conceptual: ConceptualData;
+  physical: PhysicalData;
+  nodeLayouts: Record<string, Omit<NodeLayout, 'entityId' | 'tableId'>>;
+  tableLayouts: Record<string, Omit<NodeLayout, 'entityId' | 'tableId'>>;
+  viewport: Viewport;
+  viewMode: 'conceptual' | 'physical';
+}
+
+export interface DataModel {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  snapshot: DataModelSnapshot;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  dataModels: DataModel[];
+}

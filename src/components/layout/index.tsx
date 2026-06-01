@@ -18,7 +18,16 @@ export const AppLayout: React.FC = () => {
   const leftSidebarCollapsed = useModelStore(state => state.leftSidebarCollapsed);
   const toggleLeftSidebar = useModelStore(state => state.toggleLeftSidebar);
   const entities = useModelStore(state => state.entities);
+  const relationships = useModelStore(state => state.relationships);
+  const entityGroups = useModelStore(state => state.entityGroups);
   const tables = useModelStore(state => state.tables);
+  const foreignKeys = useModelStore(state => state.foreignKeys);
+  const tableGroups = useModelStore(state => state.tableGroups);
+  const nodeLayouts = useModelStore(state => state.nodeLayouts);
+  const tableLayouts = useModelStore(state => state.tableLayouts);
+  const viewport = useModelStore(state => state.viewport);
+  const viewMode = useModelStore(state => state.viewMode);
+  const syncCurrentDataModelSnapshot = useModelStore(state => state.syncCurrentDataModelSnapshot);
   const loadModelFromJSON = useModelStore(state => state.loadModelFromJSON);
   const loadDiagramFromCloud = useModelStore(state => state.loadDiagramFromCloud);
   
@@ -86,6 +95,27 @@ export const AppLayout: React.FC = () => {
     
     loadInitialData();
   }, [urlImport.status]); // Re-run when URL import status changes
+
+  // Persist active model changes back into the selected data model (and cloud if signed in).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void syncCurrentDataModelSnapshot();
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [
+    entities,
+    relationships,
+    entityGroups,
+    tables,
+    foreignKeys,
+    tableGroups,
+    nodeLayouts,
+    tableLayouts,
+    viewport,
+    viewMode,
+    syncCurrentDataModelSnapshot,
+  ]);
 
   // Sidebar is hidden by default (leftSidebarCollapsed: true in store)
   // User toggles it manually via the navbar sidebar icon

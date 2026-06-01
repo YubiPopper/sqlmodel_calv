@@ -15,9 +15,72 @@ import type {
   ForeignKey,
   Attribute,
   EntityGroup,
-  TableGroup
+  TableGroup,
+  DataModel,
+  DataModelSnapshot,
+  Project
 } from '../model/schemas';
 import { clearSchemaUrl } from '../hooks/schemaUrlState';
+
+const PROJECTS_CLOUD_KEY = '__projects_store_v1__';
+
+const createEmptySnapshot = (): DataModelSnapshot => ({
+  conceptual: {
+    entities: [],
+    relationships: [],
+    groups: [],
+  },
+  physical: {
+    tables: [],
+    foreignKeys: [],
+    tableGroups: [],
+  },
+  nodeLayouts: {},
+  tableLayouts: {},
+  viewport: { x: 0, y: 0, zoom: 1 },
+  viewMode: 'physical',
+});
+
+const createDataModel = (name: string, snapshot: DataModelSnapshot = createEmptySnapshot()): DataModel => {
+  const now = new Date().toISOString();
+  return {
+    id: uuidv4(),
+    name,
+    createdAt: now,
+    updatedAt: now,
+    snapshot,
+  };
+};
+
+const createProject = (name: string, dataModels: DataModel[] = [createDataModel('Data Model 1')]): Project => {
+  const now = new Date().toISOString();
+  return {
+    id: uuidv4(),
+    name,
+    createdAt: now,
+    updatedAt: now,
+    dataModels,
+  };
+};
+
+const initialProject = createProject('Default Project');
+
+const getSnapshotFromState = (state: Pick<ModelState, 'entities' | 'relationships' | 'entityGroups' | 'tables' | 'foreignKeys' | 'tableGroups' | 'nodeLayouts' | 'tableLayouts' | 'viewport' | 'viewMode'>): DataModelSnapshot => ({
+  conceptual: {
+    entities: state.entities,
+    relationships: state.relationships,
+    groups: state.entityGroups,
+  },
+  physical: {
+    tables: state.tables,
+    foreignKeys: state.foreignKeys,
+    tableGroups: state.tableGroups,
+  },
+  nodeLayouts: state.nodeLayouts,
+  tableLayouts: state.tableLayouts,
+  viewport: state.viewport,
+  viewMode: state.viewMode,
+});
 
 interface ModelState {
   // Authentication
@@ -26,6 +89,21 @@ interface ModelState {
   setUser: (user: User | null) => void;
   setSession: (session: Session | null) => void;
   signOut: () => Promise<void>;
+
+  // Project hierarchy
+  projects: Project[];
+  currentProjectId: string | null;
+  currentDataModelId: string | null;
+  createProject: (name?: string) => string;
+  renameProject: (projectId: string, name: string) => void;
+  deleteProject: (projectId: string) => void;
+  createDataModel: (projectId: string, name?: string) => string | null;
+  renameDataModel: (projectId: string, dataModelId: string, name: string) => void;
+  deleteDataModel: (projectId: string, dataModelId: string) => void;
+  switchDataModel: (projectId: string, dataModelId: string) => void;
+  syncCurrentDataModelSnapshot: () => Promise<void>;
+  loadProjectsFromCloud: () => Promise<void>;
+  saveProjectsToCloud: () => Promise<void>;
   
   // Conceptual layer
   entities: Entity[];
@@ -179,11 +257,298 @@ export const useModelStore = create<ModelState>()(
       // Authentication
       user: null,
       session: null,
-      setUser: (user) => set({ user }),
+      setUser: (user) => {
+        set({ user });
+        if (user) {
+          void get().loadProjectsFromCloud();
+        }
+      },
       setSession: (session) => set({ session }),
       signOut: async () => {
         await supabase.auth.signOut();
         set({ user: null, session: null });
+      },
+
+      projects: [initialProject],
+      currentProjectId: initialProject.id,
+      currentDataModelId: initialProject.dataModels[0]?.id ?? null,
+      createProject: (name = 'New Project') => {
+        const project = createProject(name, [createDataModel('Data Model 1')]);
+        const initialModelId = project.dataModels[0]?.id ?? null;
+        set((state) => ({
+          projects: [...state.projects, project],
+        }));
+        if (initialModelId) {
+          get().switchDataModel(project.id, initialModelId);
+        }
+        void get().saveProjectsToCloud();
+        return project.id;
+      },
+      renameProject: (projectId, name) => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        set((state) => ({
+          projects: state.projects.map((project) =>
+            project.id === projectId
+              ? { ...project, name: trimmed, updatedAt: new Date().toISOString() }
+              : project
+          ),
+        }));
+        void get().saveProjectsToCloud();
+      },
+      deleteProject: (projectId) => {
+        const state = get();
+        if (state.projects.length <= 1) return;
+
+        const remainingProjects = state.projects.filter((project) => project.id !== projectId);
+        set({ projects: remainingProjects });
+
+        const deletedWasActive = state.currentProjectId === projectId;
+        if (deletedWasActive) {
+          const nextProject = remainingProjects[0];
+          const nextDataModel = nextProject?.dataModels[0];
+          if (nextProject && nextDataModel) {
+            get().switchDataModel(nextProject.id, nextDataModel.id);
+          }
+        }
+        void get().saveProjectsToCloud();
+      },
+      createDataModel: (projectId, name = 'New Data Model') => {
+        const trimmed = name.trim() || 'New Data Model';
+        const snapshot = createEmptySnapshot();
+        const model = createDataModel(trimmed, snapshot);
+
+        set((state) => ({
+          projects: state.projects.map((project) =>
+            project.id === projectId
+              ? {
+                  ...project,
+                  updatedAt: new Date().toISOString(),
+                  dataModels: [...project.dataModels, model],
+                }
+              : project
+          ),
+        }));
+
+        get().switchDataModel(projectId, model.id);
+        void get().saveProjectsToCloud();
+        return model.id;
+      },
+      renameDataModel: (projectId, dataModelId, name) => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        set((state) => ({
+          projects: state.projects.map((project) =>
+            project.id === projectId
+              ? {
+                  ...project,
+                  updatedAt: new Date().toISOString(),
+                  dataModels: project.dataModels.map((model) =>
+                    model.id === dataModelId
+                      ? { ...model, name: trimmed, updatedAt: new Date().toISOString() }
+                      : model
+                  ),
+                }
+              : project
+          ),
+        }));
+        void get().saveProjectsToCloud();
+      },
+      deleteDataModel: (projectId, dataModelId) => {
+        const state = get();
+        const project = state.projects.find((p) => p.id === projectId);
+        if (!project || project.dataModels.length <= 1) return;
+
+        const nextDataModels = project.dataModels.filter((model) => model.id !== dataModelId);
+        const nextProjects = state.projects.map((p) =>
+          p.id === projectId
+            ? { ...p, updatedAt: new Date().toISOString(), dataModels: nextDataModels }
+            : p
+        );
+
+        set({ projects: nextProjects });
+
+        const deletedWasActive = state.currentProjectId === projectId && state.currentDataModelId === dataModelId;
+        if (deletedWasActive) {
+          const nextModel = nextDataModels[0];
+          if (nextModel) {
+            get().switchDataModel(projectId, nextModel.id);
+          }
+        }
+        void get().saveProjectsToCloud();
+      },
+      switchDataModel: (projectId, dataModelId) => {
+        const currentState = get();
+
+        // Persist current in-memory model before switching.
+        void currentState.syncCurrentDataModelSnapshot();
+
+        const project = currentState.projects.find((p) => p.id === projectId);
+        const model = project?.dataModels.find((m) => m.id === dataModelId);
+        if (!project || !model) return;
+
+        const snapshot = model.snapshot;
+        set({
+          currentProjectId: projectId,
+          currentDataModelId: dataModelId,
+          entities: snapshot.conceptual.entities,
+          relationships: snapshot.conceptual.relationships,
+          entityGroups: snapshot.conceptual.groups || [],
+          tables: snapshot.physical.tables,
+          foreignKeys: snapshot.physical.foreignKeys,
+          tableGroups: snapshot.physical.tableGroups || [],
+          nodeLayouts: snapshot.nodeLayouts || {},
+          tableLayouts: snapshot.tableLayouts || {},
+          viewport: snapshot.viewport || { x: 0, y: 0, zoom: 1 },
+          viewMode: snapshot.viewMode || 'physical',
+          selectedId: null,
+          multiSelectedEntityIds: [],
+          multiSelectedTableIds: [],
+        });
+        void get().saveProjectsToCloud();
+      },
+      syncCurrentDataModelSnapshot: async () => {
+        const state = get();
+        let currentProjectId = state.currentProjectId;
+        let currentDataModelId = state.currentDataModelId;
+        let projects = state.projects;
+
+        // Migration path: legacy standalone model -> default project/data model.
+        if (!projects.length) {
+          const migratedModel = createDataModel('Data Model 1', getSnapshotFromState(state));
+          const migratedProject = createProject('Default Project', [migratedModel]);
+          projects = [migratedProject];
+          currentProjectId = migratedProject.id;
+          currentDataModelId = migratedModel.id;
+        } else if (!currentProjectId || !currentDataModelId) {
+          const fallbackProject = projects[0];
+          const fallbackModel = fallbackProject?.dataModels[0];
+          currentProjectId = fallbackProject?.id ?? null;
+          currentDataModelId = fallbackModel?.id ?? null;
+        }
+
+        if (!currentProjectId || !currentDataModelId) return;
+
+        const snapshot = getSnapshotFromState(state);
+        const updatedProjects = projects.map((project) => {
+          if (project.id !== currentProjectId) return project;
+          return {
+            ...project,
+            updatedAt: new Date().toISOString(),
+            dataModels: project.dataModels.map((model) =>
+              model.id === currentDataModelId
+                ? { ...model, updatedAt: new Date().toISOString(), snapshot }
+                : model
+            ),
+          };
+        });
+
+        set({ projects: updatedProjects, currentProjectId, currentDataModelId });
+        await get().saveProjectsToCloud();
+      },
+      loadProjectsFromCloud: async () => {
+        const state = get();
+        if (!state.user) return;
+
+        try {
+          const { data, error } = await supabase
+            .from('diagrams')
+            .select('id, data')
+            .eq('user_id', state.user.id)
+            .eq('name', PROJECTS_CLOUD_KEY)
+            .maybeSingle();
+
+          if (error) throw error;
+
+          if (!data?.data?.projects || !Array.isArray(data.data.projects) || data.data.projects.length === 0) {
+            // Seed cloud store from local state once.
+            await get().syncCurrentDataModelSnapshot();
+            return;
+          }
+
+          const cloudProjects = data.data.projects as Project[];
+          const cloudProjectId = data.data.currentProjectId as string | null;
+          const cloudDataModelId = data.data.currentDataModelId as string | null;
+
+          const activeProject = cloudProjects.find((project) => project.id === cloudProjectId) ?? cloudProjects[0];
+          const activeModel =
+            activeProject?.dataModels.find((model) => model.id === cloudDataModelId) ??
+            activeProject?.dataModels[0];
+
+          if (!activeProject || !activeModel) return;
+
+          const snapshot = activeModel.snapshot;
+          set({
+            projects: cloudProjects,
+            currentProjectId: activeProject.id,
+            currentDataModelId: activeModel.id,
+            entities: snapshot.conceptual.entities,
+            relationships: snapshot.conceptual.relationships,
+            entityGroups: snapshot.conceptual.groups || [],
+            tables: snapshot.physical.tables,
+            foreignKeys: snapshot.physical.foreignKeys,
+            tableGroups: snapshot.physical.tableGroups || [],
+            nodeLayouts: snapshot.nodeLayouts || {},
+            tableLayouts: snapshot.tableLayouts || {},
+            viewport: snapshot.viewport || { x: 0, y: 0, zoom: 1 },
+            viewMode: snapshot.viewMode || 'physical',
+            currentDiagramId: data.id,
+            selectedId: null,
+            multiSelectedEntityIds: [],
+            multiSelectedTableIds: [],
+          });
+        } catch (error) {
+          console.error('Error loading projects from cloud:', error);
+        }
+      },
+      saveProjectsToCloud: async () => {
+        const state = get();
+        if (!state.user) return;
+
+        const payload = {
+          projects: state.projects,
+          currentProjectId: state.currentProjectId,
+          currentDataModelId: state.currentDataModelId,
+        };
+
+        try {
+          const { data: existingRow, error: selectError } = await supabase
+            .from('diagrams')
+            .select('id')
+            .eq('user_id', state.user.id)
+            .eq('name', PROJECTS_CLOUD_KEY)
+            .maybeSingle();
+
+          if (selectError) throw selectError;
+
+          if (existingRow?.id) {
+            const { error: updateError } = await supabase
+              .from('diagrams')
+              .update({
+                data: payload,
+                is_public: false,
+                description: 'System row for project hierarchy',
+              })
+              .eq('id', existingRow.id);
+
+            if (updateError) throw updateError;
+            return;
+          }
+
+          const { error } = await supabase
+            .from('diagrams')
+            .insert({
+              user_id: state.user.id,
+              name: PROJECTS_CLOUD_KEY,
+              description: 'System row for project hierarchy',
+              data: payload,
+              is_public: false,
+            });
+
+          if (error) throw error;
+        } catch (error) {
+          console.error('Error saving projects to cloud:', error);
+        }
       },
       
       entities: [],
@@ -1358,6 +1723,7 @@ export const useModelStore = create<ModelState>()(
           selectedId: null,
           multiSelectedEntityIds: [],
         });
+        void get().syncCurrentDataModelSnapshot();
       },
 
       loadModelFromJSON: (data) => {
@@ -1382,6 +1748,7 @@ export const useModelStore = create<ModelState>()(
           multiSelectedTableIds: [],
           viewMode: data.viewMode || 'conceptual'
         });
+        void get().syncCurrentDataModelSnapshot();
         
         // Only apply auto-layout if no layouts were saved
         if (!hasLayouts) {
@@ -1413,6 +1780,7 @@ export const useModelStore = create<ModelState>()(
           selectedId: null,
           multiSelectedEntityIds: [],
         });
+        void get().syncCurrentDataModelSnapshot();
       },
 
       // === Helper Methods ===
@@ -2009,6 +2377,7 @@ export const useModelStore = create<ModelState>()(
             viewMode: diagramData.viewMode || 'conceptual',
             currentDiagramId: id,
           });
+          void get().syncCurrentDataModelSnapshot();
         } catch (error) {
           console.error('Error loading diagram:', error);
           throw error;
@@ -2024,6 +2393,7 @@ export const useModelStore = create<ModelState>()(
             .from('diagrams')
             .select('id, name, description, is_public, created_at, updated_at')
             .eq('user_id', state.user.id)
+            .neq('name', PROJECTS_CLOUD_KEY)
             .order('updated_at', { ascending: false });
           
           if (error) throw error;
@@ -2108,6 +2478,35 @@ export const useModelStore = create<ModelState>()(
           // This ensures users with old localStorage get the new default (false)
           if (state.showEntityDescriptions === undefined || state.showEntityDescriptions === true) {
             state.showEntityDescriptions = false;
+          }
+
+          // Migration: legacy standalone model -> project hierarchy.
+          if (!Array.isArray(state.projects) || state.projects.length === 0) {
+            const migratedModel = createDataModel('Data Model 1', {
+              conceptual: {
+                entities: state.entities || [],
+                relationships: state.relationships || [],
+                groups: state.entityGroups || [],
+              },
+              physical: {
+                tables: state.tables || [],
+                foreignKeys: state.foreignKeys || [],
+                tableGroups: state.tableGroups || [],
+              },
+              nodeLayouts: state.nodeLayouts || {},
+              tableLayouts: state.tableLayouts || {},
+              viewport: state.viewport || { x: 0, y: 0, zoom: 1 },
+              viewMode: state.viewMode || 'physical',
+            });
+            const migratedProject = createProject('Default Project', [migratedModel]);
+            state.projects = [migratedProject];
+            state.currentProjectId = migratedProject.id;
+            state.currentDataModelId = migratedModel.id;
+          } else if (!state.currentProjectId || !state.currentDataModelId) {
+            const fallbackProject = state.projects[0];
+            const fallbackModel = fallbackProject?.dataModels?.[0];
+            state.currentProjectId = fallbackProject?.id ?? null;
+            state.currentDataModelId = fallbackModel?.id ?? null;
           }
         }
       },

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -28,6 +28,7 @@ export const ProjectTree: React.FC = () => {
   const deleteDataModel = useModelStore((state) => state.deleteDataModel);
   const switchDataModel = useModelStore((state) => state.switchDataModel);
   const setViewMode = useModelStore((state) => state.setViewMode);
+  const setSelected = useModelStore((state) => state.setSelected);
 
   const entities = useModelStore((state) => state.entities);
   const relationships = useModelStore((state) => state.relationships);
@@ -38,16 +39,11 @@ export const ProjectTree: React.FC = () => {
 
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(projects.map((p) => p.id)));
   const [expandedModels, setExpandedModels] = useState<Set<string>>(() => new Set(projects.flatMap((p) => p.dataModels.map((m) => m.id))));
-
-  const activeCounts = useMemo(
-    () => ({
-      entities: entities.length,
-      relationships: relationships.length,
-      tables: tables.length,
-      foreignKeys: foreignKeys.length,
-    }),
-    [entities.length, relationships.length, tables.length, foreignKeys.length]
-  );
+  const [expandedConceptualViews, setExpandedConceptualViews] = useState<Set<string>>(() => new Set());
+  const [expandedPhysicalViews, setExpandedPhysicalViews] = useState<Set<string>>(() => new Set());
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingDataModelKey, setEditingDataModelKey] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState('');
 
   const toggleProject = (projectId: string) => {
     setExpandedProjects((prev) => {
@@ -65,6 +61,52 @@ export const ProjectTree: React.FC = () => {
       else next.add(modelId);
       return next;
     });
+  };
+
+  const toggleConceptualView = (modelId: string) => {
+    setExpandedConceptualViews((prev) => {
+      const next = new Set(prev);
+      if (next.has(modelId)) next.delete(modelId);
+      else next.add(modelId);
+      return next;
+    });
+  };
+
+  const togglePhysicalView = (modelId: string) => {
+    setExpandedPhysicalViews((prev) => {
+      const next = new Set(prev);
+      if (next.has(modelId)) next.delete(modelId);
+      else next.add(modelId);
+      return next;
+    });
+  };
+
+  const beginProjectRename = (projectId: string, name: string) => {
+    setEditingDataModelKey(null);
+    setEditingProjectId(projectId);
+    setDraftName(name);
+  };
+
+  const beginDataModelRename = (projectId: string, dataModelId: string, name: string) => {
+    setEditingProjectId(null);
+    setEditingDataModelKey(`${projectId}:${dataModelId}`);
+    setDraftName(name);
+  };
+
+  const commitProjectRename = (projectId: string) => {
+    if (draftName.trim()) {
+      renameProject(projectId, draftName.trim());
+    }
+    setEditingProjectId(null);
+    setDraftName('');
+  };
+
+  const commitDataModelRename = (projectId: string, dataModelId: string) => {
+    if (draftName.trim()) {
+      renameDataModel(projectId, dataModelId, draftName.trim());
+    }
+    setEditingDataModelKey(null);
+    setDraftName('');
   };
 
   const handleCreateProject = () => {
@@ -165,24 +207,49 @@ export const ProjectTree: React.FC = () => {
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
                   {isProjectExpanded ? <FolderOpen size={13} /> : <Folder size={13} />}
-                  <span
-                    style={{
-                      fontSize: '12px',
-                      color: isDark ? '#e6edf3' : '#111827',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {project.name}
-                  </span>
+                  {editingProjectId === project.id ? (
+                    <input
+                      autoFocus
+                      value={draftName}
+                      onChange={(e) => setDraftName(e.target.value)}
+                      onBlur={() => commitProjectRename(project.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitProjectRename(project.id);
+                        if (e.key === 'Escape') {
+                          setEditingProjectId(null);
+                          setDraftName('');
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        minWidth: 0,
+                        height: '22px',
+                        padding: '2px 6px',
+                        border: `1px solid ${isDark ? '#3b82f6' : '#2563eb'}`,
+                        borderRadius: '6px',
+                        background: isDark ? '#0d1117' : '#ffffff',
+                        color: isDark ? '#e6edf3' : '#111827',
+                        fontSize: '12px',
+                        outline: 'none',
+                      }}
+                    />
+                  ) : (
+                    <span
+                      style={{
+                        fontSize: '12px',
+                        color: isDark ? '#e6edf3' : '#111827',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {project.name}
+                    </span>
+                  )}
                 </div>
 
                 <button
-                  onClick={() => {
-                    const name = window.prompt('Rename project', project.name);
-                    if (name) renameProject(project.id, name);
-                  }}
+                  onClick={() => beginProjectRename(project.id, project.name)}
                   title="Rename Project"
                   style={{
                     border: 'none',
@@ -288,23 +355,48 @@ export const ProjectTree: React.FC = () => {
                             }}
                           >
                             <FileCode2 size={12} />
-                            <span
-                              style={{
-                                fontSize: '12px',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                              }}
-                            >
-                              {model.name}
-                            </span>
+                            {editingDataModelKey === `${project.id}:${model.id}` ? (
+                              <input
+                                autoFocus
+                                value={draftName}
+                                onChange={(e) => setDraftName(e.target.value)}
+                                onBlur={() => commitDataModelRename(project.id, model.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') commitDataModelRename(project.id, model.id);
+                                  if (e.key === 'Escape') {
+                                    setEditingDataModelKey(null);
+                                    setDraftName('');
+                                  }
+                                }}
+                                style={{
+                                  width: '100%',
+                                  minWidth: 0,
+                                  height: '22px',
+                                  padding: '2px 6px',
+                                  border: `1px solid ${isDark ? '#3b82f6' : '#2563eb'}`,
+                                  borderRadius: '6px',
+                                  background: isDark ? '#0d1117' : '#ffffff',
+                                  color: isDark ? '#e6edf3' : '#111827',
+                                  fontSize: '12px',
+                                  outline: 'none',
+                                }}
+                              />
+                            ) : (
+                              <span
+                                style={{
+                                  fontSize: '12px',
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {model.name}
+                              </span>
+                            )}
                           </button>
 
                           <button
-                            onClick={() => {
-                              const name = window.prompt('Rename data model', model.name);
-                              if (name) renameDataModel(project.id, model.id, name);
-                            }}
+                            onClick={() => beginDataModelRename(project.id, model.id, model.name)}
                             title="Rename Data Model"
                             style={{
                               border: 'none',
@@ -344,79 +436,201 @@ export const ProjectTree: React.FC = () => {
 
                         {isModelExpanded && (
                           <div style={{ marginLeft: '16px' }}>
-                            <button
-                              onClick={() => {
-                                switchDataModel(project.id, model.id);
-                                setViewMode('conceptual');
-                              }}
-                              style={{
-                                border: 'none',
-                                background: 'transparent',
-                                padding: '3px 0',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                color: isDark ? '#8b949e' : '#6b7280',
-                                fontSize: '11px',
-                              }}
-                            >
-                              <Eye size={11} />
-                              Conceptual View
-                            </button>
+                            {(() => {
+                              const conceptualEntities = isActiveModel
+                                ? entities
+                                : model.snapshot.conceptual.entities;
+                              const conceptualRelationships = isActiveModel
+                                ? relationships
+                                : model.snapshot.conceptual.relationships;
+                              const physicalTables = isActiveModel
+                                ? tables
+                                : model.snapshot.physical.tables;
+                              const physicalForeignKeys = isActiveModel
+                                ? foreignKeys
+                                : model.snapshot.physical.foreignKeys;
 
-                            {isActiveModel && (
-                              <div style={{ marginLeft: '17px', color: isDark ? '#6e7681' : '#9ca3af', fontSize: '11px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <Boxes size={10} />
-                                  Entities ({activeCounts.entities})
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <Link size={10} />
-                                  Relationships ({activeCounts.relationships})
-                                </div>
-                                {entities.map((entity) => (
-                                  <div key={entity.id} style={{ marginLeft: '16px' }}>- {entity.name}</div>
-                                ))}
-                              </div>
-                            )}
+                              const conceptualExpanded = expandedConceptualViews.has(model.id);
+                              const physicalExpanded = expandedPhysicalViews.has(model.id);
+                              const entityNameById = new Map(conceptualEntities.map((entity) => [entity.id, entity.name]));
 
-                            <button
-                              onClick={() => {
-                                switchDataModel(project.id, model.id);
-                                setViewMode('physical');
-                              }}
-                              style={{
-                                border: 'none',
-                                background: 'transparent',
-                                padding: '3px 0',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                color: isDark ? '#8b949e' : '#6b7280',
-                                fontSize: '11px',
-                              }}
-                            >
-                              <Database size={11} />
-                              Physical View
-                            </button>
+                              return (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      switchDataModel(project.id, model.id);
+                                      setViewMode('conceptual');
+                                      toggleConceptualView(model.id);
+                                    }}
+                                    style={{
+                                      border: 'none',
+                                      background: 'transparent',
+                                      padding: '3px 0',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '6px',
+                                      color: isDark ? '#8b949e' : '#6b7280',
+                                      fontSize: '11px',
+                                      width: '100%',
+                                    }}
+                                  >
+                                    {conceptualExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                                    <Eye size={11} />
+                                    Conceptual View
+                                  </button>
 
-                            {isActiveModel && (
-                              <div style={{ marginLeft: '17px', color: isDark ? '#6e7681' : '#9ca3af', fontSize: '11px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <Boxes size={10} />
-                                  Tables ({activeCounts.tables})
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <Link size={10} />
-                                  Foreign Keys ({activeCounts.foreignKeys})
-                                </div>
-                                {tables.map((table) => (
-                                  <div key={table.id} style={{ marginLeft: '16px' }}>- {table.name}</div>
-                                ))}
-                              </div>
-                            )}
+                                  {conceptualExpanded && (
+                                    <div style={{ marginLeft: '17px', color: isDark ? '#6e7681' : '#9ca3af', fontSize: '11px' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <Boxes size={10} />
+                                        Entities ({conceptualEntities.length})
+                                      </div>
+                                      {conceptualEntities.map((entity) => (
+                                        <button
+                                          key={entity.id}
+                                          onClick={() => {
+                                            switchDataModel(project.id, model.id);
+                                            setViewMode('conceptual');
+                                            setSelected(entity.id);
+                                          }}
+                                          style={{
+                                            marginLeft: '16px',
+                                            border: 'none',
+                                            background: 'transparent',
+                                            color: isDark ? '#9ca3af' : '#6b7280',
+                                            cursor: 'pointer',
+                                            padding: '1px 0',
+                                            fontSize: '11px',
+                                            textAlign: 'left',
+                                            display: 'block',
+                                          }}
+                                        >
+                                          - {entity.name}
+                                        </button>
+                                      ))}
+
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                                        <Link size={10} />
+                                        Relationships ({conceptualRelationships.length})
+                                      </div>
+                                      {conceptualRelationships.map((relationship) => {
+                                        const fromName = entityNameById.get(relationship.fromEntityId) || 'Unknown';
+                                        const toName = entityNameById.get(relationship.toEntityId) || 'Unknown';
+                                        const label = relationship.label?.trim() || `${fromName} -> ${toName}`;
+                                        return (
+                                          <button
+                                            key={relationship.id}
+                                            onClick={() => {
+                                              switchDataModel(project.id, model.id);
+                                              setViewMode('conceptual');
+                                              setSelected(relationship.id);
+                                            }}
+                                            style={{
+                                              marginLeft: '16px',
+                                              border: 'none',
+                                              background: 'transparent',
+                                              color: isDark ? '#9ca3af' : '#6b7280',
+                                              cursor: 'pointer',
+                                              padding: '1px 0',
+                                              fontSize: '11px',
+                                              textAlign: 'left',
+                                              display: 'block',
+                                            }}
+                                          >
+                                            - {label}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+
+                                  <button
+                                    onClick={() => {
+                                      switchDataModel(project.id, model.id);
+                                      setViewMode('physical');
+                                      togglePhysicalView(model.id);
+                                    }}
+                                    style={{
+                                      border: 'none',
+                                      background: 'transparent',
+                                      padding: '3px 0',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '6px',
+                                      color: isDark ? '#8b949e' : '#6b7280',
+                                      fontSize: '11px',
+                                      width: '100%',
+                                    }}
+                                  >
+                                    {physicalExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                                    <Database size={11} />
+                                    Physical View
+                                  </button>
+
+                                  {physicalExpanded && (
+                                    <div style={{ marginLeft: '17px', color: isDark ? '#6e7681' : '#9ca3af', fontSize: '11px' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <Boxes size={10} />
+                                        Tables ({physicalTables.length})
+                                      </div>
+                                      {physicalTables.map((table) => (
+                                        <button
+                                          key={table.id}
+                                          onClick={() => {
+                                            switchDataModel(project.id, model.id);
+                                            setViewMode('physical');
+                                            setSelected(table.id);
+                                          }}
+                                          style={{
+                                            marginLeft: '16px',
+                                            border: 'none',
+                                            background: 'transparent',
+                                            color: isDark ? '#9ca3af' : '#6b7280',
+                                            cursor: 'pointer',
+                                            padding: '1px 0',
+                                            fontSize: '11px',
+                                            textAlign: 'left',
+                                            display: 'block',
+                                          }}
+                                        >
+                                          - {table.name}
+                                        </button>
+                                      ))}
+
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                                        <Link size={10} />
+                                        Foreign Keys ({physicalForeignKeys.length})
+                                      </div>
+                                      {physicalForeignKeys.map((foreignKey) => (
+                                        <button
+                                          key={foreignKey.id}
+                                          onClick={() => {
+                                            switchDataModel(project.id, model.id);
+                                            setViewMode('physical');
+                                            setSelected(foreignKey.id);
+                                          }}
+                                          style={{
+                                            marginLeft: '16px',
+                                            border: 'none',
+                                            background: 'transparent',
+                                            color: isDark ? '#9ca3af' : '#6b7280',
+                                            cursor: 'pointer',
+                                            padding: '1px 0',
+                                            fontSize: '11px',
+                                            textAlign: 'left',
+                                            display: 'block',
+                                          }}
+                                        >
+                                          - {foreignKey.fromCardinality} {'->'} {foreignKey.toCardinality}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>

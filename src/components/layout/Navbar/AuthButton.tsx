@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { LogIn, LogOut, Save, FolderOpen } from 'lucide-react';
+import { LogIn, LogOut, Save, RefreshCcw } from 'lucide-react';
 import { useModelStore } from '../../../store/useModelStore';
 import { supabase } from '../../../services/supabaseClient';
 import { AuthDialog } from '../../ui/AuthDialog';
-import { DiagramsDialog } from '../../ui/DiagramsDialog';
 import { Toast } from '../../ui/Toast';
 
 interface AuthButtonProps {
@@ -16,23 +15,19 @@ interface AuthButtonProps {
 
 export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveAsComplete, isMobile = false }: AuthButtonProps = {}) => {
   const [showAuthDialog, setShowAuthDialog] = useState(false);
-  const [showDiagramsDialog, setShowDiagramsDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [diagramName, setDiagramName] = useState('');
-  const [diagramDescription, setDiagramDescription] = useState('');
-  const [isPublic, setIsPublic] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
-  const [isSaveAs, setIsSaveAs] = useState(false);
   
   const colorMode = useModelStore(state => state.colorMode);
   const user = useModelStore(state => state.user);
   const setUser = useModelStore(state => state.setUser);
   const setSession = useModelStore(state => state.setSession);
   const signOut = useModelStore(state => state.signOut);
-  const saveDiagramToCloud = useModelStore(state => state.saveDiagramToCloud);
-  const currentDiagramId = useModelStore(state => state.currentDiagramId);
+  const syncCurrentDataModelSnapshot = useModelStore(state => state.syncCurrentDataModelSnapshot);
+  const loadProjectsFromCloud = useModelStore(state => state.loadProjectsFromCloud);
   
   const menuRef = useRef<HTMLDivElement>(null);
   const isDark = colorMode === 'dark';
@@ -73,70 +68,42 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
   // Handle external save trigger
   useEffect(() => {
     if (triggerSave && user) {
-      // If diagram already exists (has UUID), save directly without dialog
-      if (currentDiagramId) {
-        handleQuickSave();
-      } else {
-        setShowSaveDialog(true);
-      }
+      void handleSyncProjects();
       onSaveComplete?.();
     }
-  }, [triggerSave, user, onSaveComplete, currentDiagramId]);
+  }, [triggerSave, user, onSaveComplete]);
 
-  // Handle external save as trigger - always show dialog
+  // Save As maps to sync in project hierarchy mode.
   useEffect(() => {
     if (triggerSaveAs && user) {
-      setIsSaveAs(true);
-      setShowSaveDialog(true);
+      void handleSyncProjects();
       onSaveAsComplete?.();
     }
   }, [triggerSaveAs, user, onSaveAsComplete]);
 
-  const handleQuickSave = async () => {
-    if (!currentDiagramId) return;
-    
+  const handleSyncProjects = async () => {
     setSaving(true);
     try {
-      // Save with empty name/description - will update existing diagram
-      await saveDiagramToCloud('', '', false);
+      await syncCurrentDataModelSnapshot();
+      setToastMessage('Projects synced to cloud');
       setShowToast(true);
     } catch (error) {
-      alert('Failed to save diagram');
+      alert('Failed to sync projects');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleSaveDiagram = async () => {
-    if (!diagramName.trim()) return;
-    
-    setSaving(true);
+  const handleReloadProjects = async () => {
+    setReloading(true);
     try {
-      // For Save As, temporarily clear currentDiagramId to force creating new diagram
-      if (isSaveAs && currentDiagramId) {
-        // Temporarily set currentDiagramId to null to force creation of new diagram
-        useModelStore.setState({ currentDiagramId: null });
-      }
-      
-      const newDiagramId = await saveDiagramToCloud(diagramName, diagramDescription, isPublic);
-      
-      // If this was Save As, update URL with new diagram ID
-      if (isSaveAs && newDiagramId) {
-        const url = new URL(window.location.href);
-        url.searchParams.set('diagram', newDiagramId);
-        window.history.pushState({}, '', url.toString());
-        setIsSaveAs(false);
-      }
-      
-      setShowSaveDialog(false);
-      setDiagramName('');
-      setDiagramDescription('');
-      setIsPublic(false);
+      await loadProjectsFromCloud();
+      setToastMessage('Projects reloaded from cloud');
       setShowToast(true);
     } catch (error) {
-      alert('Failed to save diagram');
+      alert('Failed to reload projects');
     } finally {
-      setSaving(false);
+      setReloading(false);
     }
   };
 
@@ -188,7 +155,9 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
     return (
       <>
         <button
-          onClick={() => setShowSaveDialog(true)}
+          onClick={() => {
+            void handleSyncProjects();
+          }}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -222,11 +191,13 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
           }}
         >
           <Save size={18} style={{ flexShrink: 0 }} />
-          <span>{currentDiagramId ? 'Update' : 'Save'}</span>
+          <span>{saving ? 'Syncing...' : 'Sync Projects'}</span>
         </button>
 
         <button
-          onClick={() => setShowDiagramsDialog(true)}
+          onClick={() => {
+            void handleReloadProjects();
+          }}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -259,8 +230,8 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
             e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
           }}
         >
-          <FolderOpen size={18} style={{ flexShrink: 0 }} />
-          <span>My Diagrams</span>
+          <RefreshCcw size={18} style={{ flexShrink: 0 }} />
+          <span>{reloading ? 'Reloading...' : 'Reload Projects'}</span>
         </button>
 
         <button
@@ -444,7 +415,7 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
           <div style={{ padding: '4px' }}>
             <button
               onClick={() => {
-                setShowSaveDialog(true);
+                void handleSyncProjects();
                 setShowUserMenu(false);
               }}
               style={{
@@ -471,12 +442,12 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
               }}
             >
               <Save size={16} />
-              {currentDiagramId ? 'Update Diagram' : 'Save Diagram'}
+              {saving ? 'Syncing...' : 'Sync Projects'}
             </button>
 
             <button
               onClick={() => {
-                setShowDiagramsDialog(true);
+                void handleReloadProjects();
                 setShowUserMenu(false);
               }}
               style={{
@@ -502,8 +473,8 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
                 e.currentTarget.style.background = 'transparent';
               }}
             >
-              <FolderOpen size={16} />
-              My Diagrams
+              <RefreshCcw size={16} />
+              {reloading ? 'Reloading...' : 'Reload Projects'}
             </button>
           </div>
 
@@ -547,245 +518,14 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
         </div>
       )}
 
-      {/* Save Dialog */}
-      {showSaveDialog && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            backdropFilter: 'blur(4px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '16px',
-          }}
-          onClick={() => setShowSaveDialog(false)}
-        >
-          <div
-            style={{
-              background: isDark ? '#161b22' : '#ffffff',
-              borderRadius: '12px',
-              maxWidth: '420px',
-              width: '100%',
-              boxShadow: isDark
-                ? '0 20px 60px rgba(0, 0, 0, 0.5)'
-                : '0 20px 60px rgba(0, 0, 0, 0.15)',
-              border: isDark ? '1px solid #30363d' : '1px solid #e2e8f0',
-              overflow: 'hidden',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Gradient Top Bar */}
-            <div
-              style={{
-                height: '4px',
-                background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)',
-              }}
-            />
-            
-            <div style={{ padding: '20px' }}>
-            <h3
-              style={{
-                margin: '0 0 16px 0',
-                fontSize: '19px',
-                fontWeight: 700,
-                background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-              }}
-            >
-              {currentDiagramId ? 'Update Diagram' : 'Save Diagram'}
-            </h3>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div>
-                <label
-                  style={{
-                    display: 'block',
-                    marginBottom: '6px',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: isDark ? '#8b949e' : '#64748b',
-                  }}
-                >
-                  Diagram Name *
-                </label>
-                <input
-                  type="text"
-                  value={diagramName}
-                  onChange={(e) => setDiagramName(e.target.value)}
-                  placeholder="My Awesome Diagram"
-                  style={{
-                    width: 'calc(100% - 28px)',
-                    padding: '9px 12px',
-                    border: isDark ? '1px solid #30363d' : '1px solid #d1d5db',
-                    borderRadius: '8px',
-                    background: isDark ? '#0d1117' : '#ffffff',
-                    color: isDark ? '#e6edf3' : '#1f2937',
-                    fontSize: '13px',
-                    outline: 'none',
-                    transition: 'all 0.2s',
-                  }}
-                  onFocus={(e) => {
-                    e.currentTarget.style.borderColor = '#3b82f6';
-                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
-                  }}
-                  onBlur={(e) => {
-                    e.currentTarget.style.borderColor = isDark ? '#30363d' : '#d1d5db';
-                    e.currentTarget.style.boxShadow = 'none';
-                  }}
-                />
-              </div>
-
-              <div>
-                <label
-                  style={{
-                    display: 'block',
-                    marginBottom: '6px',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: isDark ? '#8b949e' : '#64748b',
-                  }}
-                >
-                  Description (optional)
-                </label>
-                <textarea
-                  value={diagramDescription}
-                  onChange={(e) => setDiagramDescription(e.target.value)}
-                  placeholder="Describe your diagram..."
-                  rows={3}
-                  style={{
-                    width: 'calc(100% - 28px)',
-                    padding: '9px 12px',
-                    border: isDark ? '1px solid #30363d' : '1px solid #d1d5db',
-                    borderRadius: '8px',
-                    background: isDark ? '#0d1117' : '#ffffff',
-                    color: isDark ? '#e6edf3' : '#1f2937',
-                    fontSize: '13px',
-                    outline: 'none',
-                    resize: 'vertical',
-                    fontFamily: 'inherit',
-                    transition: 'all 0.2s',
-                  }}
-                  onFocus={(e) => {
-                    e.currentTarget.style.borderColor = '#3b82f6';
-                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
-                  }}
-                  onBlur={(e) => {
-                    e.currentTarget.style.borderColor = isDark ? '#30363d' : '#d1d5db';
-                    e.currentTarget.style.boxShadow = 'none';
-                  }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <input
-                  type="checkbox"
-                  id="isPublic"
-                  checked={isPublic}
-                  onChange={(e) => setIsPublic(e.target.checked)}
-                  style={{ 
-                    width: '18px', 
-                    height: '18px', 
-                    cursor: 'pointer',
-                    accentColor: '#3b82f6',
-                  }}
-                />
-                <label
-                  htmlFor="isPublic"
-                  style={{
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    color: isDark ? '#8b949e' : '#64748b',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Make this diagram public (anyone can view)
-                </label>
-              </div>
-
-              <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
-                <button
-                  onClick={() => setShowSaveDialog(false)}
-                  style={{
-                    flex: 1,
-                    padding: '10px',
-                    border: isDark
-                      ? '1px solid rgba(48, 54, 61, 0.8)'
-                      : '1px solid rgba(226, 232, 240, 0.8)',
-                    borderRadius: '8px',
-                    background: 'transparent',
-                    color: isDark ? '#8b949e' : '#64748b',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    outline: 'none',
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
-                    e.currentTarget.style.color = isDark ? '#e6edf3' : '#1f2937';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent';
-                    e.currentTarget.style.color = isDark ? '#8b949e' : '#64748b';
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveDiagram}
-                  disabled={!diagramName.trim() || saving}
-                  style={{
-                    flex: 1,
-                    padding: '10px',
-                    border: 'none',
-                    outline: 'none',
-                    borderRadius: '8px',
-                    background: diagramName.trim() && !saving
-                      ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
-                      : isDark ? '#30363d' : '#e5e7eb',
-                    color: diagramName.trim() && !saving ? '#ffffff' : isDark ? '#6e7681' : '#9ca3af',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: diagramName.trim() && !saving ? 'pointer' : 'not-allowed',
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (diagramName.trim() && !saving) {
-                      e.currentTarget.style.transform = 'translateY(-1px)';
-                      e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.4)';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (diagramName.trim() && !saving) {
-                      e.currentTarget.style.transform = 'translateY(0)';
-                      e.currentTarget.style.boxShadow = 'none';
-                    }
-                  }}
-                >
-                  {saving ? 'Saving...' : currentDiagramId ? 'Update' : 'Save'}
-                </button>
-              </div>
-            </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Toast Notification */}
       {showToast && (
         <Toast
-          message="Diagram saved successfully!"
+          message={toastMessage || 'Action complete'}
           type="save"
           onClose={() => setShowToast(false)}
         />
       )}
-
-      <DiagramsDialog isOpen={showDiagramsDialog} onClose={() => setShowDiagramsDialog(false)} />
     </div>
   );
 };

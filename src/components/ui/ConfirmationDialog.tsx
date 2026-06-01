@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useModelStore } from '../../store/useModelStore';
 
 interface ConfirmationDialogProps {
@@ -43,7 +44,7 @@ export const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
   
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div style={{
       position: 'fixed',
       top: 0,
@@ -54,7 +55,7 @@ export const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      zIndex: 1000,
+      zIndex: 11000,
     }}>
       <div style={{
         background: colorMode === 'dark' ? '#161b22' : 'white',
@@ -105,6 +106,7 @@ export const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

@@ -18,6 +18,7 @@ import { SchemaDialog } from '../../ui/SchemaDialog';
 import { ImportDialog } from '../../ui/ImportDialog';
 import { ExportDialog } from '../../ui/ExportDialog';
 import { ImportUrlDialog } from '../../ui/ImportUrlDialog';
+import { ConfirmationDialog } from '../../ui/ConfirmationDialog';
 import { 
   railsConfig, 
   snowflakeConfig, 
@@ -125,6 +126,9 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
   const [importDropdownOpen, setImportDropdownOpen] = useState(false);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
   const [insertDropdownOpen, setInsertDropdownOpen] = useState(false);
+  const [pendingImportedModel, setPendingImportedModel] = useState<any | null>(null);
+  const [pendingImportName, setPendingImportName] = useState('');
+  const [showImportDataModelDialog, setShowImportDataModelDialog] = useState(false);
   
   // Dialog states from store (persisted across component unmounts)
   const setShowExampleDialog = useModelStore(state => state.setShowExampleDialog);
@@ -134,8 +138,13 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
   const addEntity = useModelStore(state => state.addEntity);
   const addEntityGroup = useModelStore(state => state.addEntityGroup);
   const clearModel = useModelStore(state => state.clearModel);
-  const loadModel = useModelStore(state => state.loadModel);
   const loadModelFromJSON = useModelStore(state => state.loadModelFromJSON);
+  const mergeModelFromJSON = useModelStore(state => state.mergeModelFromJSON);
+  const createDataModel = useModelStore(state => state.createDataModel);
+  const projects = useModelStore(state => state.projects);
+  const currentProjectId = useModelStore(state => state.currentProjectId);
+  const entities = useModelStore(state => state.entities);
+  const tables = useModelStore(state => state.tables);
   const viewMode = useModelStore(state => state.viewMode);
   const colorMode = useModelStore(state => state.colorMode);
 
@@ -189,6 +198,33 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
     fileInputRef.current?.click();
   };
 
+  const hasExistingModel = entities.length > 0 || tables.length > 0;
+
+  const normalizeImportedModel = (data: any) => {
+    // Preferred format: complete conceptual + physical snapshot.
+    if (data?.conceptual && data?.physical) {
+      return data;
+    }
+
+    // Legacy format: conceptual + layout only.
+    if (data?.conceptual && data?.layout) {
+      return {
+        conceptual: data.conceptual,
+        physical: {
+          tables: [],
+          foreignKeys: [],
+          tableGroups: [],
+        },
+        nodeLayouts: data.layout,
+        tableLayouts: {},
+        viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
+        viewMode: data.viewMode || 'conceptual',
+      };
+    }
+
+    return null;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -198,17 +234,19 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
       try {
         const text = event.target?.result as string;
         const data = JSON.parse(text);
-        
-        // Support new format with conceptual + physical
-        if (data.conceptual && data.physical) {
-          loadModelFromJSON(data);
-        }
-        // Backward compatibility: support old format with conceptual + layout
-        else if (data.conceptual && data.layout) {
-          loadModel(data.conceptual, data.layout);
-        } 
-        else {
+        const normalized = normalizeImportedModel(data);
+
+        if (!normalized) {
           alert('Invalid file format. Expected either {conceptual, physical} or {conceptual, layout}');
+          return;
+        }
+
+        if (hasExistingModel) {
+          setPendingImportedModel(normalized);
+          setPendingImportName(file.name);
+          setShowImportDataModelDialog(true);
+        } else {
+          loadModelFromJSON(normalized);
         }
       } catch (err) {
         console.error(err);
@@ -217,6 +255,32 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
     };
     reader.readAsText(file);
     e.target.value = '';
+  };
+
+  const handleImportAsNewDataModel = () => {
+    if (!pendingImportedModel) return;
+
+    const targetProjectId = currentProjectId || projects[0]?.id;
+    if (!targetProjectId) {
+      alert('No project is available. Please create a project first.');
+      return;
+    }
+
+    const baseName = pendingImportName.replace(/\.[^.]+$/, '') || 'Imported';
+    createDataModel(targetProjectId, `${baseName} Model`);
+    loadModelFromJSON(pendingImportedModel);
+    setPendingImportedModel(null);
+    setPendingImportName('');
+    setShowImportDataModelDialog(false);
+  };
+
+  const handleImportMergeCurrent = () => {
+    if (!pendingImportedModel) return;
+
+    mergeModelFromJSON(pendingImportedModel);
+    setPendingImportedModel(null);
+    setPendingImportName('');
+    setShowImportDataModelDialog(false);
   };
 
   const handleAddTable = () => {
@@ -287,10 +351,30 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
         isOpen={exportDialogOpen}
         onClose={() => setExportDialogOpen(false)}
       />
+
+      {/* Confirmation for importing model files into projects with existing model content */}
+      <ConfirmationDialog
+        isOpen={showImportDataModelDialog}
+        title={pendingImportName ? `Import "${pendingImportName}"?` : 'Import Data Model?'}
+        message="You already have a data model in this project. By default, import will create a new data model in this project. You can also merge this file into your current model."
+        onConfirm={handleImportAsNewDataModel}
+        onCancel={handleImportMergeCurrent}
+        confirmLabel="Create New Data Model"
+        cancelLabel="Merge into Current"
+        isDestructive={false}
+      />
       
       {isMobile ? (
         // Mobile Layout - Buttons render directly into parent grid
         <>
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            style={{ display: 'none' }} 
+            accept=".json"
+            onChange={handleFileChange}
+          />
+
           {/* Import Menu - Mobile */}
           <DropdownButton label="Import" items={importItems} icon={<Upload size={16} />} fullWidth={true} compact={true} />
 
@@ -342,12 +426,12 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
         // Desktop Layout - Original horizontal layout
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap' }}>
         <input 
-        type="file" 
-        ref={fileInputRef} 
-        style={{ display: 'none' }} 
-        accept=".json"
-        onChange={handleFileChange}
-      />
+          type="file" 
+          ref={fileInputRef} 
+          style={{ display: 'none' }} 
+          accept=".json"
+          onChange={handleFileChange}
+        />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
         <Tooltip content="Import data models and templates" disabled={importDropdownOpen}>

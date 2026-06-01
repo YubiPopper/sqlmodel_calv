@@ -44,10 +44,14 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
   const colorMode = useModelStore(state => state.colorMode);
   const loadModelFromJSON = useModelStore(state => state.loadModelFromJSON);
   const mergeModelFromJSON = useModelStore(state => state.mergeModelFromJSON);
+  const createDataModel = useModelStore(state => state.createDataModel);
+  const projects = useModelStore(state => state.projects);
+  const currentProjectId = useModelStore(state => state.currentProjectId);
   const entities = useModelStore(state => state.entities);
+  const tables = useModelStore(state => state.tables);
 
   const isDark = colorMode === 'dark';
-  const hasExistingModel = entities.length > 0;
+  const hasExistingModel = entities.length > 0 || tables.length > 0;
 
   // Load examples from JSON
   useEffect(() => {
@@ -128,8 +132,16 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
     }
   };
 
-  const handleLoadReplacing = async () => {
+  const handleLoadAsNewDataModel = async () => {
     if (pendingTemplateFile) {
+      const targetProjectId = currentProjectId || projects[0]?.id;
+      if (!targetProjectId) {
+        alert('No project is available. Please create a project first.');
+        return;
+      }
+
+      // Create and switch to a fresh data model in the current project before loading.
+      createDataModel(targetProjectId, `${templateName} Model`);
       await performLoadExample(pendingTemplateFile);
       setPendingTemplateFile(null);
       setShowLoadDialog(false);
@@ -532,12 +544,12 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
       <ConfirmationDialog
         isOpen={showLoadDialog}
         title={`Load "${templateName}"?`}
-        message="You have an existing data model. Would you like to replace it or merge the template into your current model?"
-        onConfirm={handleLoadReplacing}
+        message="You already have a data model in this project. By default, this will create a new data model from the template. You can also merge the template into your current model instead."
+        onConfirm={handleLoadAsNewDataModel}
         onCancel={handleLoadMerging}
-        confirmLabel="Replace Data Model"
+        confirmLabel="Create New Data Model"
         cancelLabel="Merge into Current"
-        isDestructive={true}
+        isDestructive={false}
       />
     </>,
     document.body

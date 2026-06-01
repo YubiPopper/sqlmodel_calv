@@ -225,9 +225,9 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
   };
 
   const importItems: DropdownItem[] = [
-    { label: 'New Model', icon: <FilePlus size={14} />, onClick: () => { clearModel(); onActionComplete?.(); }, shortcut: '⌘N' },
+    { label: 'New Data Model', icon: <FilePlus size={14} />, onClick: () => { clearModel(); onActionComplete?.(); }, shortcut: '⌘N' },
     { label: '', divider: true, onClick: () => {} },
-    { label: 'Import Model', icon: <Upload size={14} />, onClick: () => { handleLoadClick(); onActionComplete?.(); }, shortcut: '⌘O' },
+    { label: 'Import Data Model', icon: <Upload size={14} />, onClick: () => { handleLoadClick(); onActionComplete?.(); }, shortcut: '⌘O' },
     { label: 'Import Schema', icon: <Upload size={14} />, onClick: () => { handleImportSchema(); onActionComplete?.(); } },
     { label: 'Import from URL', icon: <Link2 size={14} />, onClick: () => { setImportUrlDialogOpen(true); onActionComplete?.(); } },
     { label: '', divider: true, onClick: () => {} },
@@ -242,16 +242,20 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
   ];
 
   const exportItems: DropdownItem[] = [
-    { label: 'Export Model', icon: <Download size={14} />, onClick: () => { handleSave(); onActionComplete?.(); }, shortcut: '⌘S' },
+    { label: 'Export Data Model', icon: <Download size={14} />, onClick: () => { handleSave(); onActionComplete?.(); }, shortcut: '⌘S' },
     { label: 'Export SQL', icon: <DatabaseIcon size={14} />, onClick: () => { handleExportDDL(); onActionComplete?.(); } },
   ];
 
   const insertItems: DropdownItem[] = viewMode === 'conceptual'
     ? [
+        { label: 'New Data Model', icon: <FilePlus size={14} />, onClick: () => { clearModel(); onActionComplete?.(); } },
+        { label: '', divider: true, onClick: () => {} },
         { label: 'Add Entity', icon: <Plus size={14} />, onClick: () => { addEntity(); onActionComplete?.(); } },
         { label: 'Add Group', icon: <Group size={14} />, onClick: () => { addEntityGroup([], 'New Group'); onActionComplete?.(); } },
       ]
     : [
+        { label: 'New Data Model', icon: <FilePlus size={14} />, onClick: () => { clearModel(); onActionComplete?.(); } },
+        { label: '', divider: true, onClick: () => {} },
         { label: 'Add Table', icon: <Plus size={14} />, onClick: () => { handleAddTable(); onActionComplete?.(); } },
       ];
 
@@ -346,19 +350,19 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
       />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-        <Tooltip content="Import models and templates" disabled={importDropdownOpen}>
+        <Tooltip content="Import data models and templates" disabled={importDropdownOpen}>
           <DropdownButton label="Import" items={importItems} icon={<Upload size={14} />} onOpenChange={setImportDropdownOpen} />
         </Tooltip>
-        <Tooltip content="Export model as JSON or SQL DDL" disabled={exportDropdownOpen}>
+        <Tooltip content="Export data model as JSON or SQL DDL" disabled={exportDropdownOpen}>
           <DropdownButton label="Export" items={exportItems} icon={<Download size={14} />} onOpenChange={setExportDropdownOpen} />
         </Tooltip>
-        <Tooltip content="Add entities, tables, or groups to your model" disabled={insertDropdownOpen}>
+        <Tooltip content="Add entities, tables, or groups to your data model" disabled={insertDropdownOpen}>
           <DropdownButton label="Insert" items={insertItems} icon={<Plus size={14} />} onOpenChange={setInsertDropdownOpen} />
         </Tooltip>
       </div>
 
       {/* AI Button */}
-      <Tooltip content="Generate or enhance your model with AI assistance">
+      <Tooltip content="Generate or enhance your data model with AI assistance">
         <button
           onClick={() => { setShowAIDialog(true); }}
           style={{

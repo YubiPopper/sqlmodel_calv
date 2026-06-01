@@ -229,6 +229,7 @@ interface ModelState {
   // Persistence
   loadModel: (conceptual: ConceptualData, layout: LayoutData) => void;
   loadModelFromJSON: (data: any) => void;
+  mergeModelFromJSON: (data: any) => void;
   clearModel: () => void;
   
   // Diagram Management (Supabase)
@@ -1762,6 +1763,158 @@ export const useModelStore = create<ModelState>()(
           if (fitViewCallback) {
             setTimeout(() => fitViewCallback(), 50);
           }
+        }
+      },
+
+      mergeModelFromJSON: (data) => {
+        // Merge a template/example into the existing model without overwriting
+        // Create mapping of old IDs to new IDs to avoid conflicts
+        const entityIdMap = new Map<string, string>();
+        const tableIdMap = new Map<string, string>();
+        
+        // Get current state
+        const state = get();
+        
+        // 1. Merge Conceptual Entities with ID remapping
+        const newEntities = [...state.entities];
+        const templateEntities = data.conceptual?.entities || [];
+        
+        templateEntities.forEach((entity: Entity) => {
+          const newId = uuidv4();
+          entityIdMap.set(entity.id, newId);
+          newEntities.push({
+            ...entity,
+            id: newId,
+          });
+        });
+
+        // 2. Merge Relationships with remapped entity references
+        const newRelationships = [...state.relationships];
+        const templateRelationships = data.conceptual?.relationships || [];
+        
+        templateRelationships.forEach((rel: Relationship) => {
+          const newFromId = entityIdMap.get(rel.fromEntityId);
+          const newToId = entityIdMap.get(rel.toEntityId);
+          
+          if (newFromId && newToId) {
+            newRelationships.push({
+              ...rel,
+              id: uuidv4(),
+              fromEntityId: newFromId,
+              toEntityId: newToId,
+            });
+          }
+        });
+
+        // 3. Merge Entity Groups with remapped entity IDs
+        const newEntityGroups = [...state.entityGroups];
+        const templateGroups = data.conceptual?.groups || [];
+        
+        templateGroups.forEach((group: EntityGroup) => {
+          const remappedEntityIds = group.entityIds
+            .map(id => entityIdMap.get(id))
+            .filter((id): id is string => !!id);
+          
+          if (remappedEntityIds.length > 0) {
+            newEntityGroups.push({
+              ...group,
+              id: uuidv4(),
+              entityIds: remappedEntityIds,
+            });
+          }
+        });
+
+        // 4. Merge Physical Tables with ID remapping
+        const newTables = [...state.tables];
+        const templateTables = data.physical?.tables || [];
+        
+        templateTables.forEach((table: PhysicalTable) => {
+          const newTableId = uuidv4();
+          const newEntityId = table.entityId ? entityIdMap.get(table.entityId) : undefined;
+          
+          tableIdMap.set(table.id, newTableId);
+          
+          // Create new attributes with new IDs
+          const newAttributes = (table.attributes || []).map(attr => ({
+            ...attr,
+            id: uuidv4(),
+          }));
+          
+          newTables.push({
+            ...table,
+            id: newTableId,
+            entityId: newEntityId || table.entityId,
+            attributes: newAttributes,
+          });
+        });
+
+        // 5. Merge Foreign Keys with remapped table references
+        const newForeignKeys = [...state.foreignKeys];
+        const templateForeignKeys = data.physical?.foreignKeys || [];
+        
+        templateForeignKeys.forEach((fk: ForeignKey) => {
+          const newFromTableId = tableIdMap.get(fk.fromTableId);
+          const newToTableId = tableIdMap.get(fk.toTableId);
+          
+          if (newFromTableId && newToTableId) {
+            newForeignKeys.push({
+              ...fk,
+              id: uuidv4(),
+              fromTableId: newFromTableId,
+              toTableId: newToTableId,
+            });
+          }
+        });
+
+        // 6. Merge Table Groups with remapped table IDs
+        const newTableGroups = [...state.tableGroups];
+        const templateTableGroups = data.physical?.tableGroups || [];
+        
+        templateTableGroups.forEach((group: TableGroup) => {
+          const remappedTableIds = group.tableIds
+            .map(id => tableIdMap.get(id))
+            .filter((id): id is string => !!id);
+          
+          if (remappedTableIds.length > 0) {
+            newTableGroups.push({
+              ...group,
+              id: uuidv4(),
+              tableIds: remappedTableIds,
+            });
+          }
+        });
+
+        // Update state with merged data
+        set({
+          entities: newEntities,
+          relationships: newRelationships,
+          entityGroups: newEntityGroups,
+          tables: newTables,
+          foreignKeys: newForeignKeys,
+          tableGroups: newTableGroups,
+          // Clear layouts so they get auto-arranged
+          nodeLayouts: {},
+          tableLayouts: {},
+          selectedId: null,
+          multiSelectedEntityIds: [],
+          multiSelectedTableIds: [],
+        });
+
+        void get().syncCurrentDataModelSnapshot();
+
+        // Apply auto-layout for new entities/tables
+        get().autoLayout();
+        const currentViewMode = get().viewMode;
+        if (currentViewMode === 'conceptual') {
+          set({ viewMode: 'physical' });
+          get().autoLayout();
+          set({ viewMode: 'conceptual' });
+        }
+
+        // Fit to view
+        const { fitViewCallback } = get();
+        if (fitViewCallback) {
+          setTimeout(() => fitViewCallback(), 50);
         }
       },
 

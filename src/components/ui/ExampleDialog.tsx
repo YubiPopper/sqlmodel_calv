@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Database, ShoppingCart, FileText, FolderKanban, Search, Tag } from 'lucide-react';
 import { useModelStore } from '../../store/useModelStore';
+import { ConfirmationDialog } from './ConfirmationDialog';
 
 interface ExampleDialogProps {
   isOpen: boolean;
@@ -36,11 +37,17 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
   const [examples, setExamples] = useState<ExampleOption[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pendingTemplateFile, setPendingTemplateFile] = useState<string | null>(null);
+  const [showLoadDialog, setShowLoadDialog] = useState(false);
+  const [templateName, setTemplateName] = useState<string>('');
   
   const colorMode = useModelStore(state => state.colorMode);
   const loadModelFromJSON = useModelStore(state => state.loadModelFromJSON);
+  const mergeModelFromJSON = useModelStore(state => state.mergeModelFromJSON);
+  const entities = useModelStore(state => state.entities);
 
   const isDark = colorMode === 'dark';
+  const hasExistingModel = entities.length > 0;
 
   // Load examples from JSON
   useEffect(() => {
@@ -97,7 +104,19 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
 
   if (!isOpen) return null;
 
-  const handleLoadExample = async (exampleFile: string) => {
+  const handleLoadExample = async (exampleFile: string, exampleName: string) => {
+    // If there's an existing model, show a confirmation dialog
+    if (hasExistingModel) {
+      setTemplateName(exampleName);
+      setPendingTemplateFile(exampleFile);
+      setShowLoadDialog(true);
+    } else {
+      // No existing model, just load directly
+      await performLoadExample(exampleFile);
+    }
+  };
+
+  const performLoadExample = async (exampleFile: string) => {
     try {
       const response = await fetch(`/examples/${exampleFile}`);
       const modelData = await response.json();
@@ -106,6 +125,30 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
     } catch (error) {
       console.error('Failed to load example:', error);
       alert('Failed to load example. Please try again.');
+    }
+  };
+
+  const handleLoadReplacing = async () => {
+    if (pendingTemplateFile) {
+      await performLoadExample(pendingTemplateFile);
+      setPendingTemplateFile(null);
+      setShowLoadDialog(false);
+    }
+  };
+
+  const handleLoadMerging = async () => {
+    if (pendingTemplateFile) {
+      try {
+        const response = await fetch(`/examples/${pendingTemplateFile}`);
+        const modelData = await response.json();
+        mergeModelFromJSON(modelData);
+        onClose();
+        setPendingTemplateFile(null);
+        setShowLoadDialog(false);
+      } catch (error) {
+        console.error('Failed to load example:', error);
+        alert('Failed to load example. Please try again.');
+      }
     }
   };
 
@@ -340,7 +383,7 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
               filteredExamples.map((example) => (
                 <button
                   key={example.id}
-                  onClick={() => handleLoadExample(example.file)}
+                  onClick={() => handleLoadExample(example.file, example.name)}
                   style={{
                     background: isDark ? '#161b22' : '#f9fafb',
                     border: `1px solid ${isDark ? '#30363d' : '#e5e7eb'}`,
@@ -484,7 +527,20 @@ export const ExampleDialog: React.FC<ExampleDialogProps> = ({ isOpen, onClose })
           </button>
         </div>
       </div>
+
+      {/* Confirmation Dialog for Load Mode */}
+      <ConfirmationDialog
+        isOpen={showLoadDialog}
+        title={`Load "${templateName}"?`}
+        message="You have an existing data model. Would you like to replace it or merge the template into your current model?"
+        onConfirm={handleLoadReplacing}
+        onCancel={handleLoadMerging}
+        confirmLabel="Replace Data Model"
+        cancelLabel="Merge into Current"
+        isDestructive={true}
+      />
     </>,
     document.body
   );
 };
+

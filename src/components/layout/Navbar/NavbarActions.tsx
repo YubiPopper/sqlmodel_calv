@@ -4,6 +4,10 @@ import {
   Layers,
   Plus,
   Group,
+  FolderOpen,
+  FolderPlus,
+  Pencil,
+  Trash2,
   Download,
   Upload,
   Sparkles,
@@ -19,6 +23,8 @@ import { ImportDialog } from '../../ui/ImportDialog';
 import { ExportDialog } from '../../ui/ExportDialog';
 import { ImportUrlDialog } from '../../ui/ImportUrlDialog';
 import { ConfirmationDialog } from '../../ui/ConfirmationDialog';
+import { ProjectManagerDialog } from '../../ui/ProjectManagerDialog';
+import type { ProjectManagerMode } from '../../ui/ProjectManagerDialog';
 import { 
   railsConfig, 
   snowflakeConfig, 
@@ -126,6 +132,11 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
   const [importDropdownOpen, setImportDropdownOpen] = useState(false);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
   const [insertDropdownOpen, setInsertDropdownOpen] = useState(false);
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const [projectManagerState, setProjectManagerState] = useState<{ isOpen: boolean; mode: ProjectManagerMode }>({
+    isOpen: false,
+    mode: 'open',
+  });
   const [pendingImportedModel, setPendingImportedModel] = useState<any | null>(null);
   const [pendingImportName, setPendingImportName] = useState('');
   const [showImportDataModelDialog, setShowImportDataModelDialog] = useState(false);
@@ -288,6 +299,11 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
     setShowAddTableDialog(true);
   };
 
+  const openProjectManager = (mode: ProjectManagerMode) => {
+    setProjectManagerState({ isOpen: true, mode });
+    onActionComplete?.();
+  };
+
   const importItems: DropdownItem[] = [
     { label: 'New Data Model', icon: <FilePlus size={14} />, onClick: () => { clearModel(); onActionComplete?.(); }, shortcut: '⌘N' },
     { label: '', divider: true, onClick: () => {} },
@@ -322,6 +338,13 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
         { label: '', divider: true, onClick: () => {} },
         { label: 'Add Table', icon: <Plus size={14} />, onClick: () => { handleAddTable(); onActionComplete?.(); } },
       ];
+
+  const projectItems: DropdownItem[] = [
+    { label: 'Create New Project', icon: <FolderPlus size={14} />, onClick: () => openProjectManager('create') },
+    { label: 'Open Project', icon: <FolderOpen size={14} />, onClick: () => openProjectManager('open') },
+    { label: 'Rename Project', icon: <Pencil size={14} />, onClick: () => openProjectManager('rename') },
+    { label: 'Delete Project', icon: <Trash2 size={14} />, onClick: () => openProjectManager('delete') },
+  ];
 
   return (
     <>
@@ -363,6 +386,13 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
         cancelLabel="Merge into Current"
         isDestructive={false}
       />
+
+      <ProjectManagerDialog
+        isOpen={projectManagerState.isOpen}
+        initialMode={projectManagerState.mode}
+        onClose={() => setProjectManagerState((prev) => ({ ...prev, isOpen: false }))}
+        onComplete={onActionComplete}
+      />
       
       {isMobile ? (
         // Mobile Layout - Buttons render directly into parent grid
@@ -383,6 +413,9 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
 
           {/* Insert Menu - Mobile */}
           <DropdownButton label="Insert" items={insertItems} icon={<Plus size={16} />} fullWidth={true} compact={true} />
+
+          {/* Project Menu - Mobile */}
+          <DropdownButton label="Project" items={projectItems} icon={<FolderOpen size={16} />} fullWidth={true} compact={true} />
 
           {/* AI Button */}
           <button
@@ -442,6 +475,9 @@ export const NavbarActions: React.FC<NavbarActionsProps> = ({ onActionComplete, 
         </Tooltip>
         <Tooltip content="Add entities, tables, or groups to your data model" disabled={insertDropdownOpen}>
           <DropdownButton label="Insert" items={insertItems} icon={<Plus size={14} />} onOpenChange={setInsertDropdownOpen} />
+        </Tooltip>
+        <Tooltip content="Create, open, and rename projects" disabled={projectDropdownOpen}>
+          <DropdownButton label="Project" items={projectItems} icon={<FolderOpen size={14} />} onOpenChange={setProjectDropdownOpen} />
         </Tooltip>
       </div>
 

@@ -266,8 +266,39 @@ export const useModelStore = create<ModelState>()(
       },
       setSession: (session) => set({ session }),
       signOut: async () => {
-        await supabase.auth.signOut();
-        set({ user: null, session: null });
+        try {
+          await supabase.auth.signOut();
+        } finally {
+          // Reset to a clean local workspace when signing out so projects from
+          // the prior account are not visible to the next signed-out session.
+          const resetProject = createProject('Default Project');
+          const resetModel = resetProject.dataModels[0];
+          const snapshot = resetModel?.snapshot ?? createEmptySnapshot();
+
+          clearSchemaUrl();
+
+          set({
+            user: null,
+            session: null,
+            projects: [resetProject],
+            currentProjectId: resetProject.id,
+            currentDataModelId: resetModel?.id ?? null,
+            entities: snapshot.conceptual.entities,
+            relationships: snapshot.conceptual.relationships,
+            entityGroups: snapshot.conceptual.groups || [],
+            tables: snapshot.physical.tables,
+            foreignKeys: snapshot.physical.foreignKeys,
+            tableGroups: snapshot.physical.tableGroups || [],
+            nodeLayouts: snapshot.nodeLayouts || {},
+            tableLayouts: snapshot.tableLayouts || {},
+            viewport: snapshot.viewport || { x: 0, y: 0, zoom: 1 },
+            viewMode: snapshot.viewMode || 'physical',
+            selectedId: null,
+            multiSelectedEntityIds: [],
+            multiSelectedTableIds: [],
+            currentDiagramId: null,
+          });
+        }
       },
 
       projects: [initialProject],
@@ -533,10 +564,11 @@ export const useModelStore = create<ModelState>()(
               .eq('id', existingRow.id);
 
             if (updateError) throw updateError;
+            set({ currentDiagramId: existingRow.id });
             return;
           }
 
-          const { error } = await supabase
+          const { data: insertedRow, error } = await supabase
             .from('diagrams')
             .insert({
               user_id: state.user.id,
@@ -544,9 +576,14 @@ export const useModelStore = create<ModelState>()(
               description: 'System row for project hierarchy',
               data: payload,
               is_public: false,
-            });
+            })
+            .select('id')
+            .single();
 
           if (error) throw error;
+          if (insertedRow?.id) {
+            set({ currentDiagramId: insertedRow.id });
+          }
         } catch (error) {
           console.error('Error saving projects to cloud:', error);
         }

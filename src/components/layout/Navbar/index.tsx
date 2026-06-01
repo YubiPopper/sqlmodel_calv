@@ -12,8 +12,6 @@ export const Navbar: React.FC = () => {
   const colorMode = useModelStore(state => state.colorMode);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [triggerSave, setTriggerSave] = useState(false);
-  const [triggerSaveAs, setTriggerSaveAs] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const isDark = colorMode === 'dark';
 
@@ -98,16 +96,8 @@ export const Navbar: React.FC = () => {
         }}>
           {!isMobile && (
             <>
-              <SaveShareButtons 
-                onSaveClick={() => setTriggerSave(true)} 
-                onSaveAsClick={() => setTriggerSaveAs(true)}
-              />
-              <AuthButton 
-                triggerSave={triggerSave} 
-                triggerSaveAs={triggerSaveAs}
-                onSaveComplete={() => setTriggerSave(false)} 
-                onSaveAsComplete={() => setTriggerSaveAs(false)}
-              />
+              <SaveShareButtons />
+              <AuthButton />
               <GlobalSettings />
             </>
           )}
@@ -193,18 +183,8 @@ export const Navbar: React.FC = () => {
             }}
           >
             <NavbarActions onActionComplete={() => setIsMobileMenuOpen(false)} isMobile={true} />
-            <SaveShareButtons 
-              onSaveClick={() => setTriggerSave(true)} 
-              onSaveAsClick={() => setTriggerSaveAs(true)}
-              isMobile={true}
-            />
-            <AuthButton 
-              triggerSave={triggerSave} 
-              triggerSaveAs={triggerSaveAs}
-              onSaveComplete={() => setTriggerSave(false)} 
-              onSaveAsComplete={() => setTriggerSaveAs(false)}
-              isMobile={true}
-            />
+            <SaveShareButtons isMobile={true} />
+            <AuthButton isMobile={true} />
             <GlobalSettings isMobile={true} onActionComplete={() => setIsMobileMenuOpen(false)} />
           </div>
         </>

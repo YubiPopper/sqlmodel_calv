@@ -1,33 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
-import { LogIn, LogOut, Save, RefreshCcw } from 'lucide-react';
+import { LogIn, LogOut } from 'lucide-react';
 import { useModelStore } from '../../../store/useModelStore';
 import { supabase } from '../../../services/supabaseClient';
 import { AuthDialog } from '../../ui/AuthDialog';
-import { Toast } from '../../ui/Toast';
 
 interface AuthButtonProps {
-  triggerSave?: boolean;
-  triggerSaveAs?: boolean;
-  onSaveComplete?: () => void;
-  onSaveAsComplete?: () => void;
   isMobile?: boolean;
 }
 
-export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveAsComplete, isMobile = false }: AuthButtonProps = {}) => {
+export const AuthButton = ({ isMobile = false }: AuthButtonProps = {}) => {
   const [showAuthDialog, setShowAuthDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [reloading, setReloading] = useState(false);
-  const [toastMessage, setToastMessage] = useState('');
-  const [showToast, setShowToast] = useState(false);
   
   const colorMode = useModelStore(state => state.colorMode);
   const user = useModelStore(state => state.user);
   const setUser = useModelStore(state => state.setUser);
   const setSession = useModelStore(state => state.setSession);
   const signOut = useModelStore(state => state.signOut);
-  const syncCurrentDataModelSnapshot = useModelStore(state => state.syncCurrentDataModelSnapshot);
-  const loadProjectsFromCloud = useModelStore(state => state.loadProjectsFromCloud);
   
   const menuRef = useRef<HTMLDivElement>(null);
   const isDark = colorMode === 'dark';
@@ -64,48 +53,6 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
     document.addEventListener('mousedown', handleClickOutside, true);
     return () => document.removeEventListener('mousedown', handleClickOutside, true);
   }, [showUserMenu]);
-
-  // Handle external save trigger
-  useEffect(() => {
-    if (triggerSave && user) {
-      void handleSyncProjects();
-      onSaveComplete?.();
-    }
-  }, [triggerSave, user, onSaveComplete]);
-
-  // Save As maps to sync in project hierarchy mode.
-  useEffect(() => {
-    if (triggerSaveAs && user) {
-      void handleSyncProjects();
-      onSaveAsComplete?.();
-    }
-  }, [triggerSaveAs, user, onSaveAsComplete]);
-
-  const handleSyncProjects = async () => {
-    setSaving(true);
-    try {
-      await syncCurrentDataModelSnapshot();
-      setToastMessage('Projects synced to cloud');
-      setShowToast(true);
-    } catch (error) {
-      alert('Failed to sync projects');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleReloadProjects = async () => {
-    setReloading(true);
-    try {
-      await loadProjectsFromCloud();
-      setToastMessage('Projects reloaded from cloud');
-      setShowToast(true);
-    } catch (error) {
-      alert('Failed to reload projects');
-    } finally {
-      setReloading(false);
-    }
-  };
 
   if (!user) {
     return (
@@ -155,9 +102,8 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
     return (
       <>
         <button
-          onClick={() => {
-            void handleSyncProjects();
-          }}
+          type="button"
+          disabled
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -173,65 +119,14 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
             color: isDark ? '#e6edf3' : '#1f2937',
             fontSize: '14px',
             fontWeight: 500,
-            cursor: 'pointer',
+            cursor: 'default',
             transition: 'all 0.15s ease',
             width: '100%',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
-          }}
-          onMouseDown={(e) => {
-            e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
-          }}
-          onMouseUp={(e) => {
-            e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
+            opacity: 0.8,
           }}
         >
-          <Save size={18} style={{ flexShrink: 0 }} />
-          <span>{saving ? 'Syncing...' : 'Sync Projects'}</span>
-        </button>
-
-        <button
-          onClick={() => {
-            void handleReloadProjects();
-          }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '12px',
-            padding: '12px 14px',
-            minHeight: '48px',
-            height: '48px',
-            boxSizing: 'border-box',
-            background: isDark ? '#21262d' : '#f3f4f6',
-            border: `1px solid ${isDark ? '#30363d' : '#e5e7eb'}`,
-            borderRadius: '8px',
-            color: isDark ? '#e6edf3' : '#1f2937',
-            fontSize: '14px',
-            fontWeight: 500,
-            cursor: 'pointer',
-            transition: 'all 0.15s ease',
-            width: '100%',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
-          }}
-          onMouseDown={(e) => {
-            e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
-          }}
-          onMouseUp={(e) => {
-            e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
-          }}
-        >
-          <RefreshCcw size={18} style={{ flexShrink: 0 }} />
-          <span>{reloading ? 'Reloading...' : 'Reload Projects'}</span>
+          <span style={{ fontSize: '10px', color: '#22c55e' }}>●</span>
+          <span>Auto-sync enabled</span>
         </button>
 
         <button
@@ -412,70 +307,19 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
           </div>
 
           {/* Menu Items */}
-          <div style={{ padding: '4px' }}>
-            <button
-              onClick={() => {
-                void handleSyncProjects();
-                setShowUserMenu(false);
-              }}
+          <div style={{ padding: '10px 12px' }}>
+            <div
               style={{
-                width: '100%',
+                fontSize: '12px',
+                color: isDark ? '#8b949e' : '#6b7280',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '10px',
-                padding: '10px 12px',
-                background: 'transparent',
-                border: 'none',
-                color: isDark ? '#e6edf3' : '#1f2937',
-                fontSize: '14px',
-                fontWeight: 500,
-                cursor: 'pointer',
-                borderRadius: '6px',
-                transition: 'background 0.15s',
-                textAlign: 'left',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = isDark ? '#30363d' : '#f3f4f6';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
+                gap: '8px',
               }}
             >
-              <Save size={16} />
-              {saving ? 'Syncing...' : 'Sync Projects'}
-            </button>
-
-            <button
-              onClick={() => {
-                void handleReloadProjects();
-                setShowUserMenu(false);
-              }}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                padding: '10px 12px',
-                background: 'transparent',
-                border: 'none',
-                color: isDark ? '#e6edf3' : '#1f2937',
-                fontSize: '14px',
-                fontWeight: 500,
-                cursor: 'pointer',
-                borderRadius: '6px',
-                transition: 'background 0.15s',
-                textAlign: 'left',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = isDark ? '#30363d' : '#f3f4f6';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
-              }}
-            >
-              <RefreshCcw size={16} />
-              {reloading ? 'Reloading...' : 'Reload Projects'}
-            </button>
+              <span style={{ fontSize: '10px', color: '#22c55e' }}>●</span>
+              Projects auto-sync to cloud
+            </div>
           </div>
 
           {/* Divider */}
@@ -518,14 +362,6 @@ export const AuthButton = ({ triggerSave, triggerSaveAs, onSaveComplete, onSaveA
         </div>
       )}
 
-      {/* Toast Notification */}
-      {showToast && (
-        <Toast
-          message={toastMessage || 'Action complete'}
-          type="save"
-          onClose={() => setShowToast(false)}
-        />
-      )}
     </div>
   );
 };

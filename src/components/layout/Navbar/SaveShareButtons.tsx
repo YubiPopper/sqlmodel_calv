@@ -1,38 +1,48 @@
 import { useState } from 'react';
-import { Save, Share2 } from 'lucide-react';
+import { Share2 } from 'lucide-react';
 import { useModelStore } from '../../../store/useModelStore';
 import { AuthDialog } from '../../ui/AuthDialog';
 import { IconButton } from '../../shared/IconButton';
 import { Tooltip } from '../../shared/Tooltip';
 import { Toast } from '../../ui/Toast';
-import { DropdownButton } from '../../shared/Dropdown';
-import type { DropdownItem } from '../../shared/Dropdown';
 
 interface SaveShareButtonsProps {
-  onSaveClick?: () => void;
-  onSaveAsClick?: () => void;
   isMobile?: boolean;
 }
 
-export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false }: SaveShareButtonsProps) => {
+export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) => {
   const [showAuthDialog, setShowAuthDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showToast, setShowToast] = useState(false);
+  const [preparingShare, setPreparingShare] = useState(false);
   
   const user = useModelStore(state => state.user);
   const colorMode = useModelStore(state => state.colorMode);
   const currentDiagramId = useModelStore(state => state.currentDiagramId);
+  const syncCurrentDataModelSnapshot = useModelStore(state => state.syncCurrentDataModelSnapshot);
   const isDark = colorMode === 'dark';
 
-  const handleShare = () => {
+  const handleShare = async () => {
     if (!user) {
       setShowAuthDialog(true);
       return;
     }
-    
-    if (!currentDiagramId) {
-      alert('Please save your diagram first before sharing');
+
+    let shareId = currentDiagramId;
+    if (!shareId) {
+      setPreparingShare(true);
+      try {
+        // Force a fresh auto-sync if the initial cloud row has not been materialized yet.
+        await syncCurrentDataModelSnapshot();
+        shareId = useModelStore.getState().currentDiagramId;
+      } finally {
+        setPreparingShare(false);
+      }
+    }
+
+    if (!shareId) {
+      alert('Your project is still auto-syncing. Try sharing again in a moment.');
       return;
     }
     
@@ -49,66 +59,14 @@ export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false 
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const saveItems: DropdownItem[] = [
-    {
-      label: 'Save',
-      icon: <Save size={14} />,
-      onClick: () => onSaveClick?.(),
-      disabled: !currentDiagramId,
-    },
-    {
-      label: 'Save as...',
-      icon: <Save size={14} />,
-      onClick: () => onSaveAsClick?.(),
-    },
-  ];
-
   return (
     <>
       {isMobile ? (
         <>
-          {user && (
-            <button
-              onClick={() => {
-                if (currentDiagramId) {
-                  onSaveClick?.();
-                } else {
-                  onSaveAsClick?.();
-                }
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '12px',
-                padding: '12px 14px',
-                minHeight: '48px',
-                height: '48px',
-                boxSizing: 'border-box',
-                background: isDark ? '#21262d' : '#f3f4f6',
-                border: `1px solid ${isDark ? '#30363d' : '#e5e7eb'}`,
-                borderRadius: '8px',
-                color: isDark ? '#e6edf3' : '#374151',
-                fontSize: '14px',
-                fontWeight: 500,
-                cursor: 'pointer',
-                width: '100%',
-                transition: 'all 0.15s ease',
-              }}
-              onMouseDown={(e) => {
-                e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
-              }}
-              onMouseUp={(e) => {
-                e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
-              }}
-            >
-              <Save size={18} style={{ flexShrink: 0 }} />
-              <span>Save</span>
-            </button>
-          )}
-          
           <button
-            onClick={handleShare}
+            onClick={() => {
+              void handleShare();
+            }}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -136,25 +94,18 @@ export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false 
             }}
           >
             <Share2 size={18} style={{ flexShrink: 0 }} />
-            <span>Share</span>
+            <span>{preparingShare ? 'Preparing...' : 'Share'}</span>
           </button>
         </>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {user && (
-            <DropdownButton
-              label=""
-              items={saveItems}
-              icon={<Save size={18} />}
-              variant="ghost"
-            />
-          )}
-          
-          <Tooltip content={user ? "Share diagram" : "Sign in to share"}>
+          <Tooltip content={user ? "Share model" : "Sign in to share"}>
             <div>
               <IconButton
                 icon={<Share2 size={18} />}
-                onClick={handleShare}
+                onClick={() => {
+                  void handleShare();
+                }}
                 variant="ghost"
                 size="md"
               />
@@ -166,7 +117,7 @@ export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false 
       {/* Toast Notification */}
       {showToast && (
         <Toast
-          message="Share link copied to clipboard!"
+          message="Project share link copied to clipboard!"
           type="share"
           onClose={() => setShowToast(false)}
         />
@@ -224,7 +175,7 @@ export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false 
                   backgroundClip: 'text',
                 }}
               >
-                Share Diagram
+                Share Project
               </h3>
 
               <p
@@ -235,7 +186,7 @@ export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false 
                   lineHeight: 1.5,
                 }}
               >
-                Share this link with others to let them view your diagram:
+                Share this link with others to let them view this project model:
               </p>
 
               <div
@@ -248,7 +199,7 @@ export const SaveShareButtons = ({ onSaveClick, onSaveAsClick, isMobile = false 
                 <input
                   type="text"
                   readOnly
-                  value={`${window.location.origin}${window.location.pathname}?diagram=${currentDiagramId}`}
+                  value={`${window.location.origin}${window.location.pathname}?diagram=${currentDiagramId || ''}`}
                   style={{
                     flex: 1,
                     padding: '9px 12px',

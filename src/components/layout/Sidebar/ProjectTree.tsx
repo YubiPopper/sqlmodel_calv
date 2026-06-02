@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Folder,
   FolderOpen,
+  Users,
   Plus,
   FileCode2,
   Eye,
@@ -244,6 +245,14 @@ export const ProjectTree: React.FC = () => {
                       }}
                     >
                       {project.name}
+                    </span>
+                  )}
+                  {project.isShared && (
+                    <span title="Shared project" style={{ display: 'flex', alignItems: 'center' }}>
+                      <Users
+                        size={12}
+                        style={{ color: isDark ? '#58a6ff' : '#2563eb', flexShrink: 0 }}
+                      />
                     </span>
                   )}
                 </div>

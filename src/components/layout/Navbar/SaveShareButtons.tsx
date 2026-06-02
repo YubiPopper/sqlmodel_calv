@@ -15,13 +15,20 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showToast, setShowToast] = useState(false);
-  const [preparingShare, setPreparingShare] = useState(false);
-  
-  const user = useModelStore(state => state.user);
-  const colorMode = useModelStore(state => state.colorMode);
-  const currentDiagramId = useModelStore(state => state.currentDiagramId);
-  const syncCurrentDataModelSnapshot = useModelStore(state => state.syncCurrentDataModelSnapshot);
+  const [collaboratorEmail, setCollaboratorEmail] = useState('');
+  const [shareMessage, setShareMessage] = useState('');
+  const [inviting, setInviting] = useState(false);
+
+  const user = useModelStore((state) => state.user);
+  const colorMode = useModelStore((state) => state.colorMode);
+  const projects = useModelStore((state) => state.projects);
+  const currentProjectId = useModelStore((state) => state.currentProjectId);
+  const setProjectShared = useModelStore((state) => state.setProjectShared);
+  const inviteProjectCollaborator = useModelStore((state) => state.inviteProjectCollaborator);
+  const removeProjectCollaborator = useModelStore((state) => state.removeProjectCollaborator);
   const isDark = colorMode === 'dark';
+  const currentProject = projects.find((project) => project.id === currentProjectId) || null;
+  const canManageCollaborators = Boolean(user && currentProject && currentProject.ownerId === user.id);
 
   const handleShare = async () => {
     if (!user) {
@@ -29,29 +36,23 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
       return;
     }
 
-    let shareId = currentDiagramId;
-    if (!shareId) {
-      setPreparingShare(true);
-      try {
-        // Force a fresh auto-sync if the initial cloud row has not been materialized yet.
-        await syncCurrentDataModelSnapshot();
-        shareId = useModelStore.getState().currentDiagramId;
-      } finally {
-        setPreparingShare(false);
-      }
-    }
-
-    if (!shareId) {
-      alert('Your project is still auto-syncing. Try sharing again in a moment.');
+    if (!currentProjectId || !currentProject) {
+      alert('Select a project before sharing.');
       return;
     }
-    
+
+    setProjectShared(currentProjectId, true);
+    await useModelStore.getState().saveProjectsToCloud([currentProjectId]);
+    setShareMessage('');
     setShowShareDialog(true);
   };
 
   const copyShareLink = () => {
     const url = new URL(window.location.href);
-    url.searchParams.set('diagram', currentDiagramId!);
+    if (currentProjectId) {
+      url.searchParams.set('project', currentProjectId);
+      url.searchParams.set('shared', currentProjectId);
+    }
     navigator.clipboard.writeText(url.toString());
     setCopied(true);
     setShowShareDialog(false);
@@ -59,47 +60,65 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleInviteCollaborator = async () => {
+    if (!currentProjectId || !canManageCollaborators) return;
+
+    setInviting(true);
+    try {
+      const result = await inviteProjectCollaborator(currentProjectId, collaboratorEmail);
+      setShareMessage(result.message);
+      if (result.ok) {
+        setCollaboratorEmail('');
+      }
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const handleRemoveCollaborator = async (collaboratorId: string) => {
+    if (!currentProjectId || !canManageCollaborators) return;
+    await removeProjectCollaborator(currentProjectId, collaboratorId);
+  };
+
   return (
     <>
       {isMobile ? (
-        <>
-          <button
-            onClick={() => {
-              void handleShare();
-            }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '12px',
-              padding: '12px 14px',
-              minHeight: '48px',
-              height: '48px',
-              boxSizing: 'border-box',
-              background: isDark ? '#21262d' : '#f3f4f6',
-              border: `1px solid ${isDark ? '#30363d' : '#e5e7eb'}`,
-              borderRadius: '8px',
-              color: isDark ? '#e6edf3' : '#374151',
-              fontSize: '14px',
-              fontWeight: 500,
-              cursor: 'pointer',
-              width: '100%',
-              transition: 'all 0.15s ease',
-            }}
-            onMouseDown={(e) => {
-              e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
-            }}
-            onMouseUp={(e) => {
-              e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
-            }}
-          >
-            <Share2 size={18} style={{ flexShrink: 0 }} />
-            <span>{preparingShare ? 'Preparing...' : 'Share'}</span>
-          </button>
-        </>
+        <button
+          onClick={() => {
+            void handleShare();
+          }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '12px',
+            padding: '12px 14px',
+            minHeight: '48px',
+            height: '48px',
+            boxSizing: 'border-box',
+            background: isDark ? '#21262d' : '#f3f4f6',
+            border: `1px solid ${isDark ? '#30363d' : '#e5e7eb'}`,
+            borderRadius: '8px',
+            color: isDark ? '#e6edf3' : '#374151',
+            fontSize: '14px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            width: '100%',
+            transition: 'all 0.15s ease',
+          }}
+          onMouseDown={(e) => {
+            e.currentTarget.style.background = isDark ? '#30363d' : '#e5e7eb';
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.background = isDark ? '#21262d' : '#f3f4f6';
+          }}
+        >
+          <Share2 size={18} style={{ flexShrink: 0 }} />
+          <span>Share</span>
+        </button>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <Tooltip content={user ? "Share model" : "Sign in to share"}>
+          <Tooltip content={user ? 'Share model' : 'Sign in to share'}>
             <div>
               <IconButton
                 icon={<Share2 size={18} />}
@@ -114,7 +133,6 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
         </div>
       )}
 
-      {/* Toast Notification */}
       {showToast && (
         <Toast
           message="Project share link copied to clipboard!"
@@ -123,10 +141,8 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
         />
       )}
 
-      {/* Auth Dialog for non-logged-in users */}
       <AuthDialog isOpen={showAuthDialog} onClose={() => setShowAuthDialog(false)} />
 
-      {/* Share Dialog */}
       {showShareDialog && (
         <div
           style={{
@@ -155,14 +171,13 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Gradient Top Bar */}
             <div
               style={{
                 height: '4px',
                 background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)',
               }}
             />
-            
+
             <div style={{ padding: '20px' }}>
               <h3
                 style={{
@@ -186,8 +201,136 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
                   lineHeight: 1.5,
                 }}
               >
-                Share this link with others to let them view this project model:
+                Share this project link and invite collaborators to edit {currentProject ? `"${currentProject.name}"` : ''}.
               </p>
+
+              {canManageCollaborators && (
+                <div
+                  style={{
+                    marginBottom: '14px',
+                    display: 'flex',
+                    gap: '8px',
+                  }}
+                >
+                  <input
+                    type="email"
+                    placeholder="Collaborator email"
+                    value={collaboratorEmail}
+                    onChange={(e) => setCollaboratorEmail(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        void handleInviteCollaborator();
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '9px 12px',
+                      border: isDark ? '1px solid #30363d' : '1px solid #d1d5db',
+                      borderRadius: '8px',
+                      background: isDark ? '#0d1117' : '#f8fafc',
+                      color: isDark ? '#e6edf3' : '#1f2937',
+                      fontSize: '13px',
+                      outline: 'none',
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      void handleInviteCollaborator();
+                    }}
+                    disabled={inviting}
+                    style={{
+                      padding: '9px 14px',
+                      border: 'none',
+                      borderRadius: '8px',
+                      background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                      color: '#ffffff',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: inviting ? 'default' : 'pointer',
+                      opacity: inviting ? 0.75 : 1,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {inviting ? 'Inviting...' : 'Invite'}
+                  </button>
+                </div>
+              )}
+
+              {shareMessage && (
+                <p
+                  style={{
+                    margin: '0 0 12px 0',
+                    fontSize: '12px',
+                    color: shareMessage.toLowerCase().includes('unable') || shareMessage.toLowerCase().includes('only')
+                      ? '#ef4444'
+                      : isDark
+                        ? '#58a6ff'
+                        : '#2563eb',
+                  }}
+                >
+                  {shareMessage}
+                </p>
+              )}
+
+              {currentProject && currentProject.collaborators.length > 0 && (
+                <div style={{ marginBottom: '14px' }}>
+                  <div
+                    style={{
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      marginBottom: '8px',
+                      color: isDark ? '#c9d1d9' : '#1f2937',
+                    }}
+                  >
+                    Collaborators
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {currentProject.collaborators.map((collaboratorId) => (
+                      <div
+                        key={collaboratorId}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '8px',
+                          background: isDark ? '#0d1117' : '#f8fafc',
+                          border: isDark ? '1px solid #30363d' : '1px solid #e5e7eb',
+                          borderRadius: '8px',
+                          padding: '7px 10px',
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: '12px',
+                            color: isDark ? '#8b949e' : '#475569',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {collaboratorId}
+                        </span>
+                        {canManageCollaborators && (
+                          <button
+                            onClick={() => {
+                              void handleRemoveCollaborator(collaboratorId);
+                            }}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              color: '#ef4444',
+                              cursor: 'pointer',
+                              fontSize: '12px',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div
                 style={{
@@ -199,7 +342,7 @@ export const SaveShareButtons = ({ isMobile = false }: SaveShareButtonsProps) =>
                 <input
                   type="text"
                   readOnly
-                  value={`${window.location.origin}${window.location.pathname}?diagram=${currentDiagramId || ''}`}
+                  value={`${window.location.origin}${window.location.pathname}${currentProjectId ? `?project=${currentProjectId}&shared=${currentProjectId}` : ''}`}
                   style={{
                     flex: 1,
                     padding: '9px 12px',

@@ -166,5 +166,8 @@ export interface Project {
   name: string;
   createdAt: string;
   updatedAt: string;
+  isShared: boolean;
+  ownerId: string | null;
+  collaborators: string[];
   dataModels: DataModel[];
 }

@@ -14,6 +14,7 @@ import { AddTableDialog } from '../ui/AddTableDialog';
 import { useUrlImport } from '../../hooks/useUrlImport';
 
 export const AppLayout: React.FC = () => {
+  const user = useModelStore(state => state.user);
   const colorMode = useModelStore(state => state.colorMode);
   const leftSidebarCollapsed = useModelStore(state => state.leftSidebarCollapsed);
   const toggleLeftSidebar = useModelStore(state => state.toggleLeftSidebar);
@@ -30,6 +31,8 @@ export const AppLayout: React.FC = () => {
   const syncCurrentDataModelSnapshot = useModelStore(state => state.syncCurrentDataModelSnapshot);
   const loadModelFromJSON = useModelStore(state => state.loadModelFromJSON);
   const loadDiagramFromCloud = useModelStore(state => state.loadDiagramFromCloud);
+  const loadProjectsFromCloud = useModelStore(state => state.loadProjectsFromCloud);
+  const switchDataModel = useModelStore(state => state.switchDataModel);
   
   // Dialog states from store
   const showExampleDialog = useModelStore(state => state.showExampleDialog);
@@ -73,6 +76,33 @@ export const AppLayout: React.FC = () => {
 
       // Check for diagram ID in URL
       const urlParams = new URLSearchParams(window.location.search);
+      const sharedProjectId = urlParams.get('project');
+      const legacySharedRowId = urlParams.get('shared');
+
+      if ((sharedProjectId || legacySharedRowId) && user) {
+        try {
+          await loadProjectsFromCloud();
+          const storeState = useModelStore.getState();
+
+          let targetProjectId = sharedProjectId;
+          if (!targetProjectId && legacySharedRowId) {
+            const legacyMatch = Object.entries(storeState.projectsRowIdByProjectId).find(([, rowId]) => rowId === legacySharedRowId);
+            targetProjectId = legacyMatch?.[0] ?? null;
+          }
+
+          if (targetProjectId) {
+            const sharedProject = storeState.projects.find((project) => project.id === targetProjectId);
+            const firstModelId = sharedProject?.dataModels?.[0]?.id;
+            if (sharedProject && firstModelId) {
+              switchDataModel(sharedProject.id, firstModelId);
+            }
+          }
+          return;
+        } catch (error) {
+          console.error('Failed to load shared projects from URL:', error);
+        }
+      }
+
       const diagramId = urlParams.get('diagram');
       
       if (diagramId) {
@@ -94,7 +124,7 @@ export const AppLayout: React.FC = () => {
     };
     
     loadInitialData();
-  }, [urlImport.status]); // Re-run when URL import status changes
+  }, [urlImport.status, user]); // Re-run when URL import status or auth state changes
 
   // Persist active model changes back into the selected data model (and cloud if signed in).
   useEffect(() => {

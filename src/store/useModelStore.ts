@@ -22,7 +22,17 @@ import type {
 } from '../model/schemas';
 import { clearSchemaUrl } from '../hooks/schemaUrlState';
 
-const PROJECTS_CLOUD_KEY = '__projects_store_v1__';
+const LEGACY_PROJECTS_CLOUD_KEY = '__projects_store_v1__';
+const PROJECT_CLOUD_PREFIX = '__project_v1__:';
+const PROJECTS_REALTIME_CHANNEL = 'projects-realtime';
+
+let projectsRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+let isApplyingRemoteProjects = false;
+let hasPendingRealtimeReload = false;
+let projectsSyncPollTimer: ReturnType<typeof setInterval> | null = null;
+let isLoadingProjectsFromCloud = false;
+
+const getProjectCloudName = (projectId: string) => `${PROJECT_CLOUD_PREFIX}${projectId}`;
 
 const createEmptySnapshot = (): DataModelSnapshot => ({
   conceptual: {
@@ -52,18 +62,32 @@ const createDataModel = (name: string, snapshot: DataModelSnapshot = createEmpty
   };
 };
 
-const createProject = (name: string, dataModels: DataModel[] = [createDataModel('Data Model 1')]): Project => {
+const createProject = (
+  name: string,
+  dataModels: DataModel[] = [createDataModel('Data Model 1')],
+  ownerId: string | null = null
+): Project => {
   const now = new Date().toISOString();
   return {
     id: uuidv4(),
     name,
     createdAt: now,
     updatedAt: now,
+    isShared: false,
+    ownerId,
+    collaborators: [],
     dataModels,
   };
 };
 
 const initialProject = createProject('Default Project');
+
+const normalizeProject = (project: Project, fallbackOwnerId: string | null): Project => ({
+  ...project,
+  isShared: Boolean((project as any).isShared),
+  ownerId: (project as any).ownerId ?? fallbackOwnerId,
+  collaborators: Array.isArray((project as any).collaborators) ? (project as any).collaborators : [],
+});
 
 const getSnapshotFromState = (state: Pick<ModelState, 'entities' | 'relationships' | 'entityGroups' | 'tables' | 'foreignKeys' | 'tableGroups' | 'nodeLayouts' | 'tableLayouts' | 'viewport' | 'viewMode'>): DataModelSnapshot => ({
   conceptual: {
@@ -82,6 +106,12 @@ const getSnapshotFromState = (state: Pick<ModelState, 'entities' | 'relationship
   viewMode: state.viewMode,
 });
 
+const snapshotsEqual = (a: DataModelSnapshot, b: DataModelSnapshot): boolean => {
+  return JSON.stringify(a) === JSON.stringify(b);
+};
+
+const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
 interface ModelState {
   // Authentication
   user: User | null;
@@ -92,18 +122,26 @@ interface ModelState {
 
   // Project hierarchy
   projects: Project[];
+  projectsCloudHydrated: boolean;
+  projectsRowIdByProjectId: Record<string, string>;
+  projectsOwnerIdByProjectId: Record<string, string>;
   currentProjectId: string | null;
   currentDataModelId: string | null;
   createProject: (name?: string) => string;
   renameProject: (projectId: string, name: string) => void;
   deleteProject: (projectId: string) => void;
+  setProjectShared: (projectId: string, isShared: boolean) => void;
+  inviteProjectCollaborator: (projectId: string, collaboratorEmail: string) => Promise<{ ok: boolean; message: string }>;
+  removeProjectCollaborator: (projectId: string, collaboratorId: string) => Promise<void>;
   createDataModel: (projectId: string, name?: string) => string | null;
   renameDataModel: (projectId: string, dataModelId: string, name: string) => void;
   deleteDataModel: (projectId: string, dataModelId: string) => void;
   switchDataModel: (projectId: string, dataModelId: string) => void;
   syncCurrentDataModelSnapshot: () => Promise<void>;
   loadProjectsFromCloud: () => Promise<void>;
-  saveProjectsToCloud: () => Promise<void>;
+  saveProjectsToCloud: (projectIds?: string[]) => Promise<void>;
+  subscribeToProjectsRealtime: () => void;
+  unsubscribeFromProjectsRealtime: () => void;
   
   // Conceptual layer
   entities: Entity[];
@@ -259,10 +297,13 @@ export const useModelStore = create<ModelState>()(
       user: null,
       session: null,
       setUser: (user) => {
-        set({ user });
+        set({ user, projectsCloudHydrated: !user });
         if (user) {
           void get().loadProjectsFromCloud();
+          get().subscribeToProjectsRealtime();
+          return;
         }
+        get().unsubscribeFromProjectsRealtime();
       },
       setSession: (session) => set({ session }),
       signOut: async () => {
@@ -274,6 +315,7 @@ export const useModelStore = create<ModelState>()(
           const resetProject = createProject('Default Project');
           const resetModel = resetProject.dataModels[0];
           const snapshot = resetModel?.snapshot ?? createEmptySnapshot();
+          get().unsubscribeFromProjectsRealtime();
 
           clearSchemaUrl();
 
@@ -281,6 +323,9 @@ export const useModelStore = create<ModelState>()(
             user: null,
             session: null,
             projects: [resetProject],
+            projectsCloudHydrated: true,
+            projectsRowIdByProjectId: {},
+            projectsOwnerIdByProjectId: {},
             currentProjectId: resetProject.id,
             currentDataModelId: resetModel?.id ?? null,
             entities: snapshot.conceptual.entities,
@@ -302,18 +347,26 @@ export const useModelStore = create<ModelState>()(
       },
 
       projects: [initialProject],
+      projectsCloudHydrated: true,
+      projectsRowIdByProjectId: {},
+      projectsOwnerIdByProjectId: {},
       currentProjectId: initialProject.id,
       currentDataModelId: initialProject.dataModels[0]?.id ?? null,
       createProject: (name = 'New Project') => {
-        const project = createProject(name, [createDataModel('Data Model 1')]);
+        const ownerId = get().user?.id ?? null;
+        const project = createProject(name, [createDataModel('Data Model 1')], ownerId);
         const initialModelId = project.dataModels[0]?.id ?? null;
         set((state) => ({
           projects: [...state.projects, project],
+          projectsOwnerIdByProjectId: {
+            ...state.projectsOwnerIdByProjectId,
+            [project.id]: ownerId ?? '',
+          },
         }));
         if (initialModelId) {
           get().switchDataModel(project.id, initialModelId);
         }
-        void get().saveProjectsToCloud();
+        void get().saveProjectsToCloud([project.id]);
         return project.id;
       },
       renameProject: (projectId, name) => {
@@ -326,14 +379,28 @@ export const useModelStore = create<ModelState>()(
               : project
           ),
         }));
-        void get().saveProjectsToCloud();
+        void get().saveProjectsToCloud([projectId]);
       },
       deleteProject: (projectId) => {
         const state = get();
         if (state.projects.length <= 1) return;
 
+        if (state.user) {
+          const ownerId = state.projectsOwnerIdByProjectId[projectId] ?? state.projects.find((p) => p.id === projectId)?.ownerId ?? null;
+          if (ownerId && ownerId !== state.user.id) {
+            return;
+          }
+        }
+
         const remainingProjects = state.projects.filter((project) => project.id !== projectId);
-        set({ projects: remainingProjects });
+        const removedRowId = state.projectsRowIdByProjectId[projectId] ?? null;
+        const { [projectId]: _removedRowId, ...remainingRowMap } = state.projectsRowIdByProjectId;
+        const { [projectId]: _removedOwnerId, ...remainingOwnerMap } = state.projectsOwnerIdByProjectId;
+        set({
+          projects: remainingProjects,
+          projectsRowIdByProjectId: remainingRowMap,
+          projectsOwnerIdByProjectId: remainingOwnerMap,
+        });
 
         const deletedWasActive = state.currentProjectId === projectId;
         if (deletedWasActive) {
@@ -343,7 +410,102 @@ export const useModelStore = create<ModelState>()(
             get().switchDataModel(nextProject.id, nextDataModel.id);
           }
         }
-        void get().saveProjectsToCloud();
+
+        if (state.user && removedRowId) {
+          void supabase.from('diagrams').delete().eq('id', removedRowId);
+        }
+        void get().saveProjectsToCloud(remainingProjects.map((project) => project.id));
+      },
+      setProjectShared: (projectId, isShared) => {
+        const state = get();
+        if (!state.user) return;
+        const project = state.projects.find((p) => p.id === projectId);
+        const ownerId = project?.ownerId ?? state.projectsOwnerIdByProjectId[projectId] ?? null;
+        if (!project || ownerId !== state.user.id) return;
+
+        set((current) => ({
+          projects: current.projects.map((item) =>
+            item.id === projectId
+              ? { ...item, isShared, updatedAt: new Date().toISOString() }
+              : item
+          ),
+        }));
+        void get().saveProjectsToCloud([projectId]);
+      },
+      inviteProjectCollaborator: async (projectId, collaboratorEmail) => {
+        const state = get();
+        const email = collaboratorEmail.trim().toLowerCase();
+        if (!state.user) {
+          return { ok: false, message: 'Sign in is required to share projects.' };
+        }
+        if (!email) {
+          return { ok: false, message: 'Enter a collaborator email.' };
+        }
+
+        const project = state.projects.find((p) => p.id === projectId);
+        const ownerId = project?.ownerId ?? state.projectsOwnerIdByProjectId[projectId] ?? null;
+        if (!project || ownerId !== state.user.id) {
+          return { ok: false, message: 'Only the project owner can invite collaborators.' };
+        }
+
+        const { data, error } = await supabase.rpc('invite_project_collaborator', {
+          p_project_id: projectId,
+          p_collaborator_email: email,
+        });
+
+        if (error || !data) {
+          return { ok: false, message: error?.message || 'Unable to invite collaborator.' };
+        }
+
+        const collaboratorId = String(data);
+        set((current) => ({
+          projects: current.projects.map((item) => {
+            if (item.id !== projectId) return item;
+            if (item.collaborators.includes(collaboratorId)) {
+              return { ...item, isShared: true, updatedAt: new Date().toISOString() };
+            }
+            return {
+              ...item,
+              isShared: true,
+              collaborators: [...item.collaborators, collaboratorId],
+              updatedAt: new Date().toISOString(),
+            };
+          }),
+        }));
+        await get().saveProjectsToCloud([projectId]);
+        return { ok: true, message: 'Collaborator invited.' };
+      },
+      removeProjectCollaborator: async (projectId, collaboratorId) => {
+        const state = get();
+        if (!state.user) return;
+
+        const project = state.projects.find((p) => p.id === projectId);
+        const ownerId = project?.ownerId ?? state.projectsOwnerIdByProjectId[projectId] ?? null;
+        if (!project || ownerId !== state.user.id) return;
+
+        const { error } = await supabase.rpc('remove_project_collaborator', {
+          p_project_id: projectId,
+          p_collaborator_id: collaboratorId,
+        });
+
+        if (error) {
+          console.error('Error removing collaborator:', error);
+          return;
+        }
+
+        set((current) => ({
+          projects: current.projects.map((item) => {
+            if (item.id !== projectId) return item;
+            const nextCollaborators = item.collaborators.filter((id) => id !== collaboratorId);
+            return {
+              ...item,
+              collaborators: nextCollaborators,
+              isShared: nextCollaborators.length > 0 ? item.isShared : false,
+              updatedAt: new Date().toISOString(),
+            };
+          }),
+        }));
+        await get().saveProjectsToCloud([projectId]);
       },
       createDataModel: (projectId, name = 'New Data Model') => {
         const trimmed = name.trim() || 'New Data Model';
@@ -363,7 +525,7 @@ export const useModelStore = create<ModelState>()(
         }));
 
         get().switchDataModel(projectId, model.id);
-        void get().saveProjectsToCloud();
+        void get().saveProjectsToCloud([projectId]);
         return model.id;
       },
       renameDataModel: (projectId, dataModelId, name) => {
@@ -384,7 +546,7 @@ export const useModelStore = create<ModelState>()(
               : project
           ),
         }));
-        void get().saveProjectsToCloud();
+        void get().saveProjectsToCloud([projectId]);
       },
       deleteDataModel: (projectId, dataModelId) => {
         const state = get();
@@ -407,7 +569,7 @@ export const useModelStore = create<ModelState>()(
             get().switchDataModel(projectId, nextModel.id);
           }
         }
-        void get().saveProjectsToCloud();
+        void get().saveProjectsToCloud([projectId]);
       },
       switchDataModel: (projectId, dataModelId) => {
         const currentState = get();
@@ -423,6 +585,7 @@ export const useModelStore = create<ModelState>()(
         set({
           currentProjectId: projectId,
           currentDataModelId: dataModelId,
+          currentDiagramId: currentState.projectsRowIdByProjectId[projectId] ?? currentState.currentDiagramId,
           entities: snapshot.conceptual.entities,
           relationships: snapshot.conceptual.relationships,
           entityGroups: snapshot.conceptual.groups || [],
@@ -437,10 +600,12 @@ export const useModelStore = create<ModelState>()(
           multiSelectedEntityIds: [],
           multiSelectedTableIds: [],
         });
-        void get().saveProjectsToCloud();
       },
       syncCurrentDataModelSnapshot: async () => {
+        if (isApplyingRemoteProjects || isLoadingProjectsFromCloud) return;
+
         const state = get();
+        if (state.user && !state.projectsCloudHydrated) return;
         let currentProjectId = state.currentProjectId;
         let currentDataModelId = state.currentDataModelId;
         let projects = state.projects;
@@ -448,7 +613,7 @@ export const useModelStore = create<ModelState>()(
         // Migration path: legacy standalone model -> default project/data model.
         if (!projects.length) {
           const migratedModel = createDataModel('Data Model 1', getSnapshotFromState(state));
-          const migratedProject = createProject('Default Project', [migratedModel]);
+          const migratedProject = createProject('Default Project', [migratedModel], state.user?.id ?? null);
           projects = [migratedProject];
           currentProjectId = migratedProject.id;
           currentDataModelId = migratedModel.id;
@@ -462,12 +627,19 @@ export const useModelStore = create<ModelState>()(
         if (!currentProjectId || !currentDataModelId) return;
 
         const snapshot = getSnapshotFromState(state);
+        const activeProject = projects.find((project) => project.id === currentProjectId);
+        const activeModel = activeProject?.dataModels.find((model) => model.id === currentDataModelId);
+        if (activeModel && snapshotsEqual(activeModel.snapshot, snapshot)) {
+          return;
+        }
+
         const updatedProjects = projects.map((project) => {
           if (project.id !== currentProjectId) return project;
+          const normalizedProject = normalizeProject(project, project.ownerId ?? state.projectsOwnerIdByProjectId[project.id] ?? state.user?.id ?? null);
           return {
-            ...project,
+            ...normalizedProject,
             updatedAt: new Date().toISOString(),
-            dataModels: project.dataModels.map((model) =>
+            dataModels: normalizedProject.dataModels.map((model) =>
               model.id === currentDataModelId
                 ? { ...model, updatedAt: new Date().toISOString(), snapshot }
                 : model
@@ -476,116 +648,331 @@ export const useModelStore = create<ModelState>()(
         });
 
         set({ projects: updatedProjects, currentProjectId, currentDataModelId });
-        await get().saveProjectsToCloud();
+        await get().saveProjectsToCloud([currentProjectId]);
       },
       loadProjectsFromCloud: async () => {
         const state = get();
         if (!state.user) return;
 
+        isLoadingProjectsFromCloud = true;
+
         try {
-          const { data, error } = await supabase
-            .from('diagrams')
-            .select('id, data')
-            .eq('user_id', state.user.id)
-            .eq('name', PROJECTS_CLOUD_KEY)
-            .maybeSingle();
+          const [perProjectRowsResult, legacyRowsResult] = await Promise.all([
+            supabase
+              .from('diagrams')
+              .select('id, user_id, name, data, updated_at')
+              .like('name', `${PROJECT_CLOUD_PREFIX}%`)
+              .order('updated_at', { ascending: false }),
+            supabase
+              .from('diagrams')
+              .select('id, user_id, name, data, updated_at')
+              .eq('name', LEGACY_PROJECTS_CLOUD_KEY)
+              .order('updated_at', { ascending: false }),
+          ]);
 
-          if (error) throw error;
+          if (perProjectRowsResult.error) throw perProjectRowsResult.error;
+          if (legacyRowsResult.error) throw legacyRowsResult.error;
 
-          if (!data?.data?.projects || !Array.isArray(data.data.projects) || data.data.projects.length === 0) {
-            // Seed cloud store from local state once.
+          const perProjectRows = perProjectRowsResult.data || [];
+          const legacyRows = legacyRowsResult.data || [];
+          const data = [...perProjectRows, ...legacyRows];
+
+          if (!data || data.length === 0) {
+            set({ projectsCloudHydrated: true });
             await get().syncCurrentDataModelSnapshot();
             return;
           }
 
-          const cloudProjects = data.data.projects as Project[];
-          const cloudProjectId = data.data.currentProjectId as string | null;
-          const cloudDataModelId = data.data.currentDataModelId as string | null;
+          const hasPerProjectRows = perProjectRows.length > 0;
 
-          const activeProject = cloudProjects.find((project) => project.id === cloudProjectId) ?? cloudProjects[0];
+          const rowMap: Record<string, string> = {};
+          const ownerMap: Record<string, string> = {};
+          const projectById = new Map<string, Project>();
+
+          for (const row of data) {
+            const isLegacyRow = row.name === LEGACY_PROJECTS_CLOUD_KEY;
+            if (hasPerProjectRows && isLegacyRow) {
+              continue;
+            }
+
+            const rowProjectsRaw = isLegacyRow
+              ? (Array.isArray((row.data as any)?.projects)
+                  ? ((row.data as any).projects as Project[])
+                  : [])
+              : ((row.data as any)?.project
+                  ? [((row.data as any).project as Project)]
+                  : []);
+
+            const normalizedProjects = rowProjectsRaw.map((project) =>
+              normalizeProject(project, row.user_id)
+            );
+
+            const visibleProjects =
+              row.user_id === state.user.id
+                ? normalizedProjects
+                : normalizedProjects.filter(
+                    (project) => project.isShared && project.collaborators.includes(state.user!.id)
+                  );
+
+            for (const project of visibleProjects) {
+              const alreadySeen = projectById.has(project.id);
+              const shouldReplaceWithPerProject = !isLegacyRow && (!rowMap[project.id] || alreadySeen);
+
+              if (!alreadySeen || shouldReplaceWithPerProject) {
+                projectById.set(project.id, project);
+                ownerMap[project.id] = row.user_id;
+                if (!isLegacyRow) {
+                  rowMap[project.id] = row.id;
+                }
+              }
+            }
+          }
+
+          const mergedProjects = Array.from(projectById.values());
+
+          if (mergedProjects.length === 0) {
+            set({ projectsCloudHydrated: true });
+            return;
+          }
+
+          const preferredProjectId =
+            (state.currentProjectId && rowMap[state.currentProjectId] ? state.currentProjectId : null) ??
+            mergedProjects[0]?.id ??
+            null;
+
+          const activeProject = mergedProjects.find((project) => project.id === preferredProjectId) ?? mergedProjects[0];
           const activeModel =
-            activeProject?.dataModels.find((model) => model.id === cloudDataModelId) ??
+            activeProject?.dataModels.find((model) => model.id === state.currentDataModelId) ??
             activeProject?.dataModels[0];
 
           if (!activeProject || !activeModel) return;
 
           const snapshot = activeModel.snapshot;
-          set({
-            projects: cloudProjects,
-            currentProjectId: activeProject.id,
-            currentDataModelId: activeModel.id,
-            entities: snapshot.conceptual.entities,
-            relationships: snapshot.conceptual.relationships,
-            entityGroups: snapshot.conceptual.groups || [],
-            tables: snapshot.physical.tables,
-            foreignKeys: snapshot.physical.foreignKeys,
-            tableGroups: snapshot.physical.tableGroups || [],
-            nodeLayouts: snapshot.nodeLayouts || {},
-            tableLayouts: snapshot.tableLayouts || {},
-            viewport: snapshot.viewport || { x: 0, y: 0, zoom: 1 },
-            viewMode: snapshot.viewMode || 'physical',
-            currentDiagramId: data.id,
-            selectedId: null,
-            multiSelectedEntityIds: [],
-            multiSelectedTableIds: [],
-          });
-        } catch (error) {
-          console.error('Error loading projects from cloud:', error);
-        }
-      },
-      saveProjectsToCloud: async () => {
-        const state = get();
-        if (!state.user) return;
+          const latestState = get();
+          const liveSnapshot = getSnapshotFromState(latestState);
+          const projectsUnchanged =
+            jsonEqual(latestState.projects, mergedProjects) &&
+            jsonEqual(latestState.projectsRowIdByProjectId, rowMap) &&
+            jsonEqual(latestState.projectsOwnerIdByProjectId, ownerMap) &&
+            latestState.currentProjectId === activeProject.id &&
+            latestState.currentDataModelId === activeModel.id;
+          const shouldApplyCanvasSnapshot =
+            latestState.currentProjectId !== activeProject.id ||
+            latestState.currentDataModelId !== activeModel.id ||
+            !snapshotsEqual(liveSnapshot, snapshot);
 
-        const payload = {
-          projects: state.projects,
-          currentProjectId: state.currentProjectId,
-          currentDataModelId: state.currentDataModelId,
-        };
-
-        try {
-          const { data: existingRow, error: selectError } = await supabase
-            .from('diagrams')
-            .select('id')
-            .eq('user_id', state.user.id)
-            .eq('name', PROJECTS_CLOUD_KEY)
-            .maybeSingle();
-
-          if (selectError) throw selectError;
-
-          if (existingRow?.id) {
-            const { error: updateError } = await supabase
-              .from('diagrams')
-              .update({
-                data: payload,
-                is_public: false,
-                description: 'System row for project hierarchy',
-              })
-              .eq('id', existingRow.id);
-
-            if (updateError) throw updateError;
-            set({ currentDiagramId: existingRow.id });
+          if (projectsUnchanged && !shouldApplyCanvasSnapshot) {
+            if (!latestState.projectsCloudHydrated) {
+              set({ projectsCloudHydrated: true });
+            }
             return;
           }
 
-          const { data: insertedRow, error } = await supabase
-            .from('diagrams')
-            .insert({
-              user_id: state.user.id,
-              name: PROJECTS_CLOUD_KEY,
-              description: 'System row for project hierarchy',
-              data: payload,
-              is_public: false,
-            })
-            .select('id')
-            .single();
+          set({
+            projects: mergedProjects,
+            projectsRowIdByProjectId: rowMap,
+            projectsOwnerIdByProjectId: ownerMap,
+            currentProjectId: activeProject.id,
+            currentDataModelId: activeModel.id,
+            entities: shouldApplyCanvasSnapshot ? snapshot.conceptual.entities : latestState.entities,
+            relationships: shouldApplyCanvasSnapshot ? snapshot.conceptual.relationships : latestState.relationships,
+            entityGroups: shouldApplyCanvasSnapshot ? (snapshot.conceptual.groups || []) : latestState.entityGroups,
+            tables: shouldApplyCanvasSnapshot ? snapshot.physical.tables : latestState.tables,
+            foreignKeys: shouldApplyCanvasSnapshot ? snapshot.physical.foreignKeys : latestState.foreignKeys,
+            tableGroups: shouldApplyCanvasSnapshot ? (snapshot.physical.tableGroups || []) : latestState.tableGroups,
+            nodeLayouts: shouldApplyCanvasSnapshot ? (snapshot.nodeLayouts || {}) : latestState.nodeLayouts,
+            tableLayouts: shouldApplyCanvasSnapshot ? (snapshot.tableLayouts || {}) : latestState.tableLayouts,
+            viewport: shouldApplyCanvasSnapshot ? (snapshot.viewport || { x: 0, y: 0, zoom: 1 }) : latestState.viewport,
+            viewMode: shouldApplyCanvasSnapshot ? (snapshot.viewMode || 'physical') : latestState.viewMode,
+            projectsCloudHydrated: true,
+            currentDiagramId: rowMap[activeProject.id] ?? null,
+            selectedId: shouldApplyCanvasSnapshot ? null : latestState.selectedId,
+            multiSelectedEntityIds: shouldApplyCanvasSnapshot ? [] : latestState.multiSelectedEntityIds,
+            multiSelectedTableIds: shouldApplyCanvasSnapshot ? [] : latestState.multiSelectedTableIds,
+          });
 
-          if (error) throw error;
-          if (insertedRow?.id) {
-            set({ currentDiagramId: insertedRow.id });
+        } catch (error) {
+          set({ projectsCloudHydrated: true });
+          console.error('Error loading projects from cloud:', error);
+        } finally {
+          isLoadingProjectsFromCloud = false;
+        }
+      },
+      saveProjectsToCloud: async (projectIds) => {
+        const state = get();
+        if (!state.user) return;
+
+        try {
+          let ownLegacyRows: Array<{ id: string }> = [];
+          if (!projectIds || projectIds.length === 0) {
+            const { data: fetchedLegacyRows, error: ownLegacyRowsError } = await supabase
+              .from('diagrams')
+              .select('id')
+              .eq('user_id', state.user.id)
+              .eq('name', LEGACY_PROJECTS_CLOUD_KEY);
+
+            if (ownLegacyRowsError) throw ownLegacyRowsError;
+            ownLegacyRows = fetchedLegacyRows || [];
           }
+
+          const projectsRowIdByProjectId = { ...state.projectsRowIdByProjectId };
+          const projectsOwnerIdByProjectId = { ...state.projectsOwnerIdByProjectId };
+          const projectsByRowId: Record<string, Project> = {};
+          const newProjects: Project[] = [];
+          const targetProjectIds = new Set(
+            (projectIds && projectIds.length > 0
+              ? projectIds
+              : (state.currentProjectId ? [state.currentProjectId] : state.projects.map((project) => project.id)))
+          );
+
+          for (const project of state.projects) {
+            if (!targetProjectIds.has(project.id)) continue;
+
+            const ownerId =
+              project.ownerId ?? projectsOwnerIdByProjectId[project.id] ?? state.user.id;
+            const normalized = normalizeProject(project, ownerId);
+
+            projectsOwnerIdByProjectId[project.id] = ownerId || state.user.id;
+
+            let rowId = projectsRowIdByProjectId[project.id];
+            if (!rowId && ownerId === state.user.id) {
+              newProjects.push(normalized);
+              continue;
+            }
+            if (!rowId) continue;
+
+            projectsRowIdByProjectId[project.id] = rowId;
+            projectsByRowId[rowId] = normalized;
+          }
+
+          for (const [rowId, project] of Object.entries(projectsByRowId)) {
+            const payload = { project };
+            const { error: updateError } = await supabase
+              .from('diagrams')
+              .update({
+                name: getProjectCloudName(project.id),
+                data: payload,
+                is_public: false,
+                description: 'System row for single project workspace',
+              })
+              .eq('id', rowId);
+
+            if (updateError) throw updateError;
+          }
+
+          for (const project of newProjects) {
+            const payload = { project };
+            const { data: insertedRow, error: insertError } = await supabase
+              .from('diagrams')
+              .insert({
+                user_id: state.user.id,
+                name: getProjectCloudName(project.id),
+                description: 'System row for single project workspace',
+                data: payload,
+                is_public: false,
+              })
+              .select('id')
+              .single();
+
+            if (insertError) throw insertError;
+            if (insertedRow?.id) {
+              projectsRowIdByProjectId[project.id] = insertedRow.id;
+            }
+          }
+
+          // Cleanup legacy multi-project rows owned by this user.
+          if (!projectIds || projectIds.length === 0) {
+            for (const legacyRow of ownLegacyRows || []) {
+              await supabase.from('diagrams').delete().eq('id', legacyRow.id);
+            }
+          }
+
+          const currentProjectRowId =
+            (state.currentProjectId && projectsRowIdByProjectId[state.currentProjectId]) || null;
+          set({
+            projectsRowIdByProjectId,
+            projectsOwnerIdByProjectId,
+            currentDiagramId: currentProjectRowId,
+          });
         } catch (error) {
           console.error('Error saving projects to cloud:', error);
+        }
+      },
+      subscribeToProjectsRealtime: () => {
+        const state = get();
+        if (!state.user) return;
+
+        get().unsubscribeFromProjectsRealtime();
+
+        projectsRealtimeChannel = supabase
+          .channel(PROJECTS_REALTIME_CHANNEL)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'diagrams',
+            },
+            () => {
+              if (isApplyingRemoteProjects) {
+                hasPendingRealtimeReload = true;
+                return;
+              }
+              isApplyingRemoteProjects = true;
+              void get()
+                .loadProjectsFromCloud()
+                .finally(() => {
+                  isApplyingRemoteProjects = false;
+                  if (hasPendingRealtimeReload) {
+                    hasPendingRealtimeReload = false;
+                    isApplyingRemoteProjects = true;
+                    void get()
+                      .loadProjectsFromCloud()
+                      .finally(() => {
+                        isApplyingRemoteProjects = false;
+                      });
+                  }
+                });
+            }
+          )
+          .subscribe();
+
+        // Fallback pull-based sync: guarantees eventual consistency when realtime
+        // delivery is delayed or unavailable in local/dev setups.
+        if (!projectsSyncPollTimer) {
+          projectsSyncPollTimer = setInterval(() => {
+            const current = get();
+            if (!current.user || !current.projectsCloudHydrated) return;
+            if (isApplyingRemoteProjects) {
+              hasPendingRealtimeReload = true;
+              return;
+            }
+            isApplyingRemoteProjects = true;
+            void get()
+              .loadProjectsFromCloud()
+              .finally(() => {
+                isApplyingRemoteProjects = false;
+                if (hasPendingRealtimeReload) {
+                  hasPendingRealtimeReload = false;
+                  isApplyingRemoteProjects = true;
+                  void get()
+                    .loadProjectsFromCloud()
+                    .finally(() => {
+                      isApplyingRemoteProjects = false;
+                    });
+                }
+              });
+          }, 1500);
+        }
+      },
+      unsubscribeFromProjectsRealtime: () => {
+        if (projectsRealtimeChannel) {
+          void supabase.removeChannel(projectsRealtimeChannel);
+          projectsRealtimeChannel = null;
+        }
+        if (projectsSyncPollTimer) {
+          clearInterval(projectsSyncPollTimer);
+          projectsSyncPollTimer = null;
         }
       },
       
@@ -2583,7 +2970,8 @@ export const useModelStore = create<ModelState>()(
             .from('diagrams')
             .select('id, name, description, is_public, created_at, updated_at')
             .eq('user_id', state.user.id)
-            .neq('name', PROJECTS_CLOUD_KEY)
+            .neq('name', LEGACY_PROJECTS_CLOUD_KEY)
+            .not('name', 'like', `${PROJECT_CLOUD_PREFIX}%`)
             .order('updated_at', { ascending: false });
           
           if (error) throw error;
@@ -2688,7 +3076,7 @@ export const useModelStore = create<ModelState>()(
               viewport: state.viewport || { x: 0, y: 0, zoom: 1 },
               viewMode: state.viewMode || 'physical',
             });
-            const migratedProject = createProject('Default Project', [migratedModel]);
+            const migratedProject = createProject('Default Project', [migratedModel], state.user?.id ?? null);
             state.projects = [migratedProject];
             state.currentProjectId = migratedProject.id;
             state.currentDataModelId = migratedModel.id;
@@ -2698,6 +3086,25 @@ export const useModelStore = create<ModelState>()(
             state.currentProjectId = fallbackProject?.id ?? null;
             state.currentDataModelId = fallbackModel?.id ?? null;
           }
+
+          state.projects = (state.projects || []).map((project) =>
+            normalizeProject(project as Project, state.user?.id ?? null)
+          );
+
+          if (!state.projectsRowIdByProjectId || typeof state.projectsRowIdByProjectId !== 'object') {
+            state.projectsRowIdByProjectId = {};
+          }
+          if (!state.projectsOwnerIdByProjectId || typeof state.projectsOwnerIdByProjectId !== 'object') {
+            state.projectsOwnerIdByProjectId = {};
+          }
+          for (const project of state.projects) {
+            if (project.ownerId) {
+              state.projectsOwnerIdByProjectId[project.id] = project.ownerId;
+            }
+          }
+
+          // Prevent stale local autosave before cloud project rows load.
+          state.projectsCloudHydrated = !state.user;
         }
       },
     }

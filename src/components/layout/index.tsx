@@ -126,11 +126,14 @@ export const AppLayout: React.FC = () => {
     loadInitialData();
   }, [urlImport.status, user]); // Re-run when URL import status or auth state changes
 
-  // Persist active model changes back into the selected data model (and cloud if signed in).
+  // Persist structural canvas changes to cloud (2 s debounce).
+  // Using a longer debounce than before so that rapid edits (e.g. typing in a
+  // field, dragging a node) are batched into a single cloud write instead of
+  // hammering the DB on every keystroke or drag event.
   useEffect(() => {
     const timer = setTimeout(() => {
       void syncCurrentDataModelSnapshot();
-    }, 250);
+    }, 2000);
 
     return () => clearTimeout(timer);
   }, [
@@ -142,10 +145,20 @@ export const AppLayout: React.FC = () => {
     tableGroups,
     nodeLayouts,
     tableLayouts,
-    viewport,
     viewMode,
     syncCurrentDataModelSnapshot,
   ]);
+
+  // Persist viewport (pan/zoom) changes separately with a longer debounce.
+  // Viewport updates fire on every mouse-move during panning which would
+  // otherwise reset the 2 s timer above and delay all structural saves.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void syncCurrentDataModelSnapshot();
+    }, 5000);
+
+    return () => clearTimeout(timer);
+  }, [viewport, syncCurrentDataModelSnapshot]);
 
   // Sidebar is hidden by default (leftSidebarCollapsed: true in store)
   // User toggles it manually via the navbar sidebar icon

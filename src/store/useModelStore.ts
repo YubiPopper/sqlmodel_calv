@@ -32,6 +32,13 @@ let hasPendingRealtimeReload = false;
 let projectsSyncPollTimer: ReturnType<typeof setInterval> | null = null;
 let isLoadingProjectsFromCloud = false;
 
+// Timestamp of the last cloud push from this client.
+// Used to suppress realtime echoes: when we save our own changes, Supabase fires
+// a postgres_changes event back at us. Without suppression this causes a reload
+// that replaces local state and glitches the canvas.
+let localSaveTimestamp = 0;
+const ECHO_SUPPRESS_MS = 5000; // ms to ignore realtime/poll events after own save
+
 const getProjectCloudName = (projectId: string) => `${PROJECT_CLOUD_PREFIX}${projectId}`;
 
 const createEmptySnapshot = (): DataModelSnapshot => ({
@@ -802,6 +809,9 @@ export const useModelStore = create<ModelState>()(
         const state = get();
         if (!state.user) return;
 
+        // Mark the time we start pushing so realtime echo suppression kicks in.
+        localSaveTimestamp = Date.now();
+
         try {
           let ownLegacyRows: Array<{ id: string }> = [];
           if (!projectIds || projectIds.length === 0) {
@@ -914,6 +924,11 @@ export const useModelStore = create<ModelState>()(
               table: 'diagrams',
             },
             () => {
+              // Suppress echo: this event was most likely triggered by our own save.
+              // Reloading immediately after our own save causes canvas glitches because
+              // the user may have made further changes between the save and the echo.
+              if (Date.now() - localSaveTimestamp < ECHO_SUPPRESS_MS) return;
+
               if (isApplyingRemoteProjects) {
                 hasPendingRealtimeReload = true;
                 return;
@@ -939,10 +954,15 @@ export const useModelStore = create<ModelState>()(
 
         // Fallback pull-based sync: guarantees eventual consistency when realtime
         // delivery is delayed or unavailable in local/dev setups.
+        // Interval is intentionally long (30 s) — realtime handles the fast path.
+        // We also skip polls that fall within the echo-suppression window so our
+        // own recent saves don't immediately reload and glitch the canvas.
         if (!projectsSyncPollTimer) {
           projectsSyncPollTimer = setInterval(() => {
             const current = get();
             if (!current.user || !current.projectsCloudHydrated) return;
+            // Skip if we just saved — the realtime event (or next poll) will pick it up.
+            if (Date.now() - localSaveTimestamp < ECHO_SUPPRESS_MS) return;
             if (isApplyingRemoteProjects) {
               hasPendingRealtimeReload = true;
               return;
@@ -962,7 +982,7 @@ export const useModelStore = create<ModelState>()(
                     });
                 }
               });
-          }, 1500);
+          }, 30_000); // 30 s — realtime handles sub-second updates
         }
       },
       unsubscribeFromProjectsRealtime: () => {
